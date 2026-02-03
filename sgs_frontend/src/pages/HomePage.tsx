@@ -73,7 +73,7 @@ export function HomePage({ onNavigate }: HomePageProps) {
           <div className="quickstart-card">
             <h4>1. Fork Repository</h4>
             <p>Fork and clone the Stellar Game Studio repo.</p>
-            <code>git clone https://github.com/jamesbachini/Stellar-Game-Studio</code>
+            <code className="code-compact">git clone https://github.com/jamesbachini/Stellar-Game-Studio</code>
           </div>
           <div className="quickstart-card">
             <h4>2. Setup</h4>

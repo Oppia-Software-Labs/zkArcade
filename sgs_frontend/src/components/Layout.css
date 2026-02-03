@@ -13,6 +13,7 @@
   inset: 0;
   z-index: 0;
   pointer-events: none;
+  background: #ffffff;
 }
 
 .studio-orb {
@@ -23,6 +24,7 @@
   filter: blur(60px);
   opacity: 0.45;
   animation: float 22s ease-in-out infinite;
+  display: none;
 }
 
 .orb-1 {
@@ -49,10 +51,44 @@
 .studio-grid {
   position: absolute;
   inset: 0;
-  background-image: linear-gradient(90deg, rgba(15, 15, 15, 0.04) 1px, transparent 1px),
-    linear-gradient(rgba(15, 15, 15, 0.04) 1px, transparent 1px);
-  background-size: 140px 140px;
+  background-image: linear-gradient(
+    120deg,
+    rgba(253, 218, 36, 0.9),
+    rgba(67, 161, 210, 0.88),
+    rgba(31, 95, 139, 0.92)
+  );
+  mask-image: radial-gradient(circle, #000 1.6px, transparent 2.2px);
+  mask-size: 14px 14px;
+  mask-position: 0 0;
+  -webkit-mask-image: radial-gradient(circle, #000 1.6px, transparent 2.2px);
+  -webkit-mask-size: 14px 14px;
+  -webkit-mask-position: 0 0;
   opacity: 0.35;
+  filter: saturate(1.35);
+}
+
+.studio-background::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+      to bottom,
+      #ffffff 0%,
+      rgba(255, 255, 255, 0.55) 12%,
+      rgba(255, 255, 255, 0.12) 30%,
+      rgba(255, 255, 255, 0.12) 70%,
+      rgba(255, 255, 255, 0.6) 88%,
+      #ffffff 100%
+    ),
+    radial-gradient(
+      circle at 50% 45%,
+      rgba(255, 255, 255, 0) 0%,
+      rgba(255, 255, 255, 0.35) 55%,
+      rgba(255, 255, 255, 0.78) 75%,
+      rgba(255, 255, 255, 0.95) 88%,
+      #ffffff 100%
+    );
+  pointer-events: none;
 }
 
 .studio-header,
