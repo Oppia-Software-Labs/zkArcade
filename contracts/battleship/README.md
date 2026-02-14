@@ -50,7 +50,14 @@ fn verify(
 ) -> bool;
 ```
 
-You can implement this verifier as a Groth16 adapter that decodes `proof_payload`, reconstructs public inputs, and calls your Circom verifier contract.
+Use `contracts/battleship-verifier-adapter` as the bridge layer. It decodes `proof_payload`, checks context-binding public inputs, then calls a Groth16 verifier contract.
+
+Recommended public input prefix for the adapter:
+
+- `[0]` board commitment high 16-byte limb (right-aligned in 32 bytes)
+- `[1]` board commitment low 16-byte limb
+- `[2]` `public_inputs_hash` high 16-byte limb
+- `[3]` `public_inputs_hash` low 16-byte limb
 
 ## Read Methods
 

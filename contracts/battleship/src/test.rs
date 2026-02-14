@@ -192,7 +192,7 @@ fn test_start_commit_fire_resolve_flow() {
     let after = client.get_game(&session_id);
     assert_eq!(after.hits_on_p2, 1);
     assert_eq!(after.turn, Some(player2));
-    assert!(after.pending_shot.is_none());
+    assert!(after.pending_shot_shooter.is_none());
 }
 
 #[test]

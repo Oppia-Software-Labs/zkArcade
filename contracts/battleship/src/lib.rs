@@ -78,17 +78,10 @@ pub enum ShipType {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Shot {
-    pub shooter: Address,
-    pub x: u32,
-    pub y: u32,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ShotResult {
     pub is_hit: bool,
-    pub sunk_ship: Option<ShipType>,
+    // 0 = none, 1..5 = Carrier..Destroyer
+    pub sunk_ship: u32,
     pub winner: Option<Address>,
     pub next_turn: Option<Address>,
 }
@@ -116,7 +109,9 @@ pub struct Game {
     pub turn: Option<Address>,
     pub board_commitment_p1: Option<BytesN<32>>,
     pub board_commitment_p2: Option<BytesN<32>>,
-    pub pending_shot: Option<Shot>,
+    pub pending_shot_shooter: Option<Address>,
+    pub pending_shot_x: u32,
+    pub pending_shot_y: u32,
     // Bitmaps over 100 cells. Index = y * 10 + x.
     pub shots_p1_to_p2: u128,
     pub shots_p2_to_p1: u128,
@@ -215,7 +210,9 @@ impl BattleshipContract {
             turn: None,
             board_commitment_p1: None,
             board_commitment_p2: None,
-            pending_shot: None,
+            pending_shot_shooter: None,
+            pending_shot_x: 0,
+            pending_shot_y: 0,
             shots_p1_to_p2: 0,
             shots_p2_to_p1: 0,
             hits_on_p1: 0,
@@ -286,7 +283,7 @@ impl BattleshipContract {
             return Err(Error::InvalidPhase);
         }
 
-        if game.pending_shot.is_some() {
+        if game.pending_shot_shooter.is_some() {
             return Err(Error::PendingShotExists);
         }
 
@@ -310,7 +307,9 @@ impl BattleshipContract {
             return Err(Error::NotPlayer);
         }
 
-        game.pending_shot = Some(Shot { shooter, x, y });
+        game.pending_shot_shooter = Some(shooter);
+        game.pending_shot_x = x;
+        game.pending_shot_y = y;
         Self::save_game(&env, &key, &game);
 
         Ok(())
@@ -336,8 +335,12 @@ impl BattleshipContract {
             return Err(Error::InvalidPhase);
         }
 
-        let pending = game.pending_shot.clone().ok_or(Error::NoPendingShot)?;
-        let shooter = pending.shooter.clone();
+        let shooter = game
+            .pending_shot_shooter
+            .clone()
+            .ok_or(Error::NoPendingShot)?;
+        let shot_x = game.pending_shot_x;
+        let shot_y = game.pending_shot_y;
 
         let expected_defender = Self::opponent(&game, &shooter)?;
         if defender != expected_defender {
@@ -349,7 +352,7 @@ impl BattleshipContract {
             return Err(Error::InvalidSunkShip);
         }
 
-        let bit = Self::coord_to_bit(pending.x, pending.y)?;
+        let bit = Self::coord_to_bit(shot_x, shot_y)?;
         if shooter == game.player1 {
             if game.shots_p1_to_p2 & bit != 0 {
                 return Err(Error::ShotAlreadyResolved);
@@ -375,8 +378,8 @@ impl BattleshipContract {
             session_id,
             defender.clone(),
             shooter.clone(),
-            pending.x,
-            pending.y,
+            shot_x,
+            shot_y,
             is_hit,
             sunk_ship,
             board_commitment.clone(),
@@ -461,12 +464,12 @@ impl BattleshipContract {
             next_turn = Some(defender);
         }
 
-        game.pending_shot = None;
+        game.pending_shot_shooter = None;
         Self::save_game(&env, &key, &game);
 
         Ok(ShotResult {
             is_hit,
-            sunk_ship: ship,
+            sunk_ship,
             winner,
             next_turn,
         })
