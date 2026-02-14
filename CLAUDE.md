@@ -4,7 +4,6 @@ This repo is the Stellar Game Studio. Use this guide when building or updating g
 
 **Repo Map**
 - `contracts/` Soroban game contracts + `mock-game-hub`
-- `contracts/number-guess/`, `contracts/twenty-one/`, `contracts/dice-duel/` reference implementations
 - `bindings/` generated TypeScript bindings (do not hand-edit)
 - `scripts/` Bun scripts for create/build/deploy/bindings/dev flows
 - `template_frontend/` standalone number-guess example frontend used by the create script
