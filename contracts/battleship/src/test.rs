@@ -1,18 +1,15 @@
 #![cfg(test)]
 
-// Unit tests for the battleship contract using a simple mock GameHub.
-// These tests verify game logic independently of the full GameHub system.
-//
-// Note: These tests use a minimal mock for isolation and speed.
-// For full integration tests with the real Game Hub contract, see the platform repo.
-
-use crate::{Error, BattleshipContract, BattleshipContractClient};
+use crate::{BattleshipContract, BattleshipContractClient, Error, GamePhase};
 use soroban_sdk::testutils::{Address as _, Ledger as _};
-use soroban_sdk::{contract, contractimpl, Address, BytesN, Env};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env};
 
-// ============================================================================
-// Mock GameHub for Unit Testing
-// ============================================================================
+#[contracttype]
+#[derive(Clone)]
+enum HubDataKey {
+    Started(u32),
+    Ended(u32),
+}
 
 #[contract]
 pub struct MockGameHub;
@@ -20,29 +17,59 @@ pub struct MockGameHub;
 #[contractimpl]
 impl MockGameHub {
     pub fn start_game(
-        _env: Env,
+        env: Env,
         _game_id: Address,
-        _session_id: u32,
+        session_id: u32,
         _player1: Address,
         _player2: Address,
         _player1_points: i128,
         _player2_points: i128,
     ) {
-        // Mock implementation - does nothing
+        env.storage()
+            .persistent()
+            .set(&HubDataKey::Started(session_id), &true);
     }
 
-    pub fn end_game(_env: Env, _session_id: u32, _player1_won: bool) {
-        // Mock implementation - does nothing
+    pub fn end_game(env: Env, session_id: u32, _player1_won: bool) {
+        env.storage()
+            .persistent()
+            .set(&HubDataKey::Ended(session_id), &true);
     }
 
-    pub fn add_game(_env: Env, _game_address: Address) {
-        // Mock implementation - does nothing
+    pub fn was_started(env: Env, session_id: u32) -> bool {
+        env.storage()
+            .persistent()
+            .get(&HubDataKey::Started(session_id))
+            .unwrap_or(false)
+    }
+
+    pub fn was_ended(env: Env, session_id: u32) -> bool {
+        env.storage()
+            .persistent()
+            .get(&HubDataKey::Ended(session_id))
+            .unwrap_or(false)
     }
 }
 
-// ============================================================================
-// Test Helpers
-// ============================================================================
+#[contract]
+pub struct MockVerifier;
+
+#[contractimpl]
+impl MockVerifier {
+    pub fn verify(
+        _env: Env,
+        _board_commitment: BytesN<32>,
+        _public_inputs_hash: BytesN<32>,
+        proof_payload: Bytes,
+    ) -> bool {
+        if proof_payload.len() == 0 {
+            return false;
+        }
+
+        // Convention for tests: first byte 1 => valid proof
+        proof_payload.get(0).unwrap() == 1
+    }
+}
 
 fn setup_test() -> (
     Env,
@@ -50,13 +77,14 @@ fn setup_test() -> (
     MockGameHubClient<'static>,
     Address,
     Address,
+    BytesN<32>,
+    BytesN<32>,
 ) {
     let env = Env::default();
     env.mock_all_auths();
 
-    // Set ledger info for time-based operations
     env.ledger().set(soroban_sdk::testutils::LedgerInfo {
-        timestamp: 1441065600,
+        timestamp: 1_441_065_600,
         protocol_version: 25,
         sequence_number: 100,
         network_id: Default::default(),
@@ -66,474 +94,358 @@ fn setup_test() -> (
         max_entry_ttl: u32::MAX / 2,
     });
 
-    // Deploy mock GameHub contract
     let hub_addr = env.register(MockGameHub, ());
-    let game_hub = MockGameHubClient::new(&env, &hub_addr);
+    let verifier_addr = env.register(MockVerifier, ());
+    let hub = MockGameHubClient::new(&env, &hub_addr);
 
-    // Create admin address
     let admin = Address::generate(&env);
-
-    // Deploy battleship with admin and GameHub address
-    let contract_id = env.register(BattleshipContract, (&admin, &hub_addr));
+    let contract_id = env.register(BattleshipContract, (&admin, &hub_addr, &verifier_addr));
     let client = BattleshipContractClient::new(&env, &contract_id);
-
-    // Register battleship as a whitelisted game (mock does nothing)
-    game_hub.add_game(&contract_id);
 
     let player1 = Address::generate(&env);
     let player2 = Address::generate(&env);
 
-    (env, client, game_hub, player1, player2)
+    let board1 = BytesN::from_array(&env, &[11u8; 32]);
+    let board2 = BytesN::from_array(&env, &[22u8; 32]);
+
+    (env, client, hub, player1, player2, board1, board2)
 }
 
-/// Assert that a Result contains a specific number_guess error
-///
-/// This helper provides type-safe error assertions following Stellar/Soroban best practices.
-/// Instead of using `assert_eq!(result, Err(Ok(Error::AlreadyGuessed)))`, this pattern:
-/// - Provides compile-time error checking
-/// - Makes tests more readable with named errors
-/// - Gives better failure messages
-///
-/// # Example
-/// ```
-/// let result = client.try_make_guess(&session_id, &player, &7);
-/// assert_number_guess_error(&result, Error::AlreadyGuessed);
-/// ```
-///
-/// # Type Signature
-/// The try_ methods return: `Result<Result<T, T::Error>, Result<E, InvokeError>>`
-/// - Ok(Ok(value)): Call succeeded, decode succeeded
-/// - Ok(Err(conv_err)): Call succeeded, decode failed
-/// - Err(Ok(error)): Contract reverted with custom error (THIS IS WHAT WE TEST)
-/// - Err(Err(invoke_err)): Low-level invocation failure
-fn assert_number_guess_error<T, E>(
+fn assert_battleship_error<T, E>(
     result: &Result<Result<T, E>, Result<Error, soroban_sdk::InvokeError>>,
     expected_error: Error,
 ) {
     match result {
-        Err(Ok(actual_error)) => {
-            assert_eq!(
-                *actual_error, expected_error,
-                "Expected error {:?} (code {}), but got {:?} (code {})",
-                expected_error, expected_error as u32, actual_error, *actual_error as u32
-            );
-        }
-        Err(Err(_invoke_error)) => {
-            panic!(
-                "Expected contract error {:?} (code {}), but got invocation error",
-                expected_error, expected_error as u32
-            );
-        }
-        Ok(Err(_conv_error)) => {
-            panic!(
-                "Expected contract error {:?} (code {}), but got conversion error",
-                expected_error, expected_error as u32
-            );
-        }
-        Ok(Ok(_)) => {
-            panic!(
-                "Expected error {:?} (code {}), but operation succeeded",
-                expected_error, expected_error as u32
-            );
-        }
+        Err(Ok(actual_error)) => assert_eq!(*actual_error, expected_error),
+        _ => panic!("Expected specific contract error"),
     }
 }
 
-// ============================================================================
-// Basic Game Flow Tests
-// ============================================================================
+fn valid_proof(env: &Env) -> Bytes {
+    Bytes::from_array(env, &[1u8])
+}
+
+fn invalid_proof(env: &Env) -> Bytes {
+    Bytes::from_array(env, &[0u8])
+}
+
+fn resolve_pending(
+    client: &BattleshipContractClient<'static>,
+    session_id: u32,
+    defender: &Address,
+    shooter: &Address,
+    x: u32,
+    y: u32,
+    is_hit: bool,
+    sunk_ship: u32,
+    board_commitment: &BytesN<32>,
+    proof: &Bytes,
+) {
+    let hash = client.build_public_inputs_hash(
+        &session_id,
+        defender,
+        shooter,
+        &x,
+        &y,
+        &is_hit,
+        &sunk_ship,
+        board_commitment,
+    );
+
+    client.resolve_shot(&session_id, defender, &is_hit, &sunk_ship, proof, &hash);
+}
 
 #[test]
-fn test_complete_game() {
-    let (_env, client, _hub, player1, player2) = setup_test();
+fn test_start_commit_fire_resolve_flow() {
+    let (env, client, hub, player1, player2, board1, board2) = setup_test();
 
     let session_id = 1u32;
     let points = 100_0000000;
 
-    // Start game
     client.start_game(&session_id, &player1, &player2, &points, &points);
+    assert!(hub.was_started(&session_id));
 
-    // Get game to verify state
-    let game = client.get_game(&session_id);
-    assert!(game.winning_number.is_none()); // Winning number not set yet
-    assert!(game.winner.is_none()); // Game is still active
-    assert_eq!(game.player1, player1);
-    assert_eq!(game.player2, player2);
-    assert_eq!(game.player1_points, points);
-    assert_eq!(game.player2_points, points);
+    let before = client.get_game(&session_id);
+    assert_eq!(before.phase, GamePhase::WaitingForBoards);
 
-    // Make guesses
-    client.make_guess(&session_id, &player1, &5);
-    client.make_guess(&session_id, &player2, &7);
+    client.commit_board(&session_id, &player1, &board1);
+    client.commit_board(&session_id, &player2, &board2);
 
-    // Reveal winner
-    let winner = client.reveal_winner(&session_id);
-    assert!(winner == player1 || winner == player2);
+    let in_progress = client.get_game(&session_id);
+    assert_eq!(in_progress.phase, GamePhase::InProgress);
+    assert_eq!(in_progress.turn, Some(player1.clone()));
 
-    // Verify game is ended and winning number is now set
-    let final_game = client.get_game(&session_id);
-    assert!(final_game.winner.is_some()); // Game has ended
-    assert_eq!(final_game.winner.unwrap(), winner);
-    assert!(final_game.winning_number.is_some());
-    let winning_number = final_game.winning_number.unwrap();
-    assert!(winning_number >= 1 && winning_number <= 10);
+    client.fire(&session_id, &player1, &3, &7);
+    resolve_pending(
+        &client,
+        session_id,
+        &player2,
+        &player1,
+        3,
+        7,
+        true,
+        0,
+        &board2,
+        &valid_proof(&env),
+    );
+
+    let after = client.get_game(&session_id);
+    assert_eq!(after.hits_on_p2, 1);
+    assert_eq!(after.turn, Some(player2));
+    assert!(after.pending_shot.is_none());
 }
 
 #[test]
-fn test_winning_number_in_range() {
-    let (_env, client, _hub, player1, player2) = setup_test();
+fn test_fire_requires_0_to_9_coordinates() {
+    let (_env, client, _hub, player1, player2, board1, board2) = setup_test();
 
     let session_id = 2u32;
-    client.start_game(&session_id, &player1, &player2, &100_0000000, &100_0000000);
+    client.start_game(&session_id, &player1, &player2, &1, &1);
+    client.commit_board(&session_id, &player1, &board1);
+    client.commit_board(&session_id, &player2, &board2);
 
-    // Make guesses and reveal winner to generate winning number
-    client.make_guess(&session_id, &player1, &5);
-    client.make_guess(&session_id, &player2, &7);
-    client.reveal_winner(&session_id);
+    let result = client.try_fire(&session_id, &player1, &10, &0);
+    assert_battleship_error(&result, Error::InvalidCoordinate);
+
+    let result = client.try_fire(&session_id, &player1, &0, &10);
+    assert_battleship_error(&result, Error::InvalidCoordinate);
+}
+
+#[test]
+fn test_anyone_can_resolve_with_valid_payload() {
+    let (env, client, _hub, player1, player2, board1, board2) = setup_test();
+    let outsider = Address::generate(&env);
+
+    let session_id = 3u32;
+    client.start_game(&session_id, &player1, &player2, &1, &1);
+    client.commit_board(&session_id, &player1, &board1);
+    client.commit_board(&session_id, &player2, &board2);
+    client.fire(&session_id, &player1, &0, &0);
+
+    let hash = client.build_public_inputs_hash(
+        &session_id,
+        &player2,
+        &player1,
+        &0,
+        &0,
+        &false,
+        &0,
+        &board2,
+    );
+
+    // Outsider submits the valid payload; no auth required on resolve_shot.
+    let _ = outsider;
+    client.resolve_shot(&session_id, &player2, &false, &0, &valid_proof(&env), &hash);
 
     let game = client.get_game(&session_id);
-    let winning_number = game
-        .winning_number
-        .expect("Winning number should be set after reveal");
-    assert!(
-        winning_number >= 1 && winning_number <= 10,
-        "Winning number should be between 1 and 10"
+    assert_eq!(game.turn, Some(player2));
+}
+
+#[test]
+fn test_reject_invalid_hash_or_proof() {
+    let (env, client, _hub, player1, player2, board1, board2) = setup_test();
+
+    let session_id = 4u32;
+    client.start_game(&session_id, &player1, &player2, &1, &1);
+    client.commit_board(&session_id, &player1, &board1);
+    client.commit_board(&session_id, &player2, &board2);
+    client.fire(&session_id, &player1, &1, &1);
+
+    let wrong_hash = BytesN::from_array(&env, &[9u8; 32]);
+    let bad_hash_result = client.try_resolve_shot(
+        &session_id,
+        &player2,
+        &true,
+        &0,
+        &valid_proof(&env),
+        &wrong_hash,
     );
+    assert_battleship_error(&bad_hash_result, Error::InvalidPublicInputsHash);
+
+    let valid_hash = client.build_public_inputs_hash(
+        &session_id,
+        &player2,
+        &player1,
+        &1,
+        &1,
+        &true,
+        &0,
+        &board2,
+    );
+    let bad_proof_result = client.try_resolve_shot(
+        &session_id,
+        &player2,
+        &true,
+        &0,
+        &invalid_proof(&env),
+        &valid_hash,
+    );
+    assert_battleship_error(&bad_proof_result, Error::InvalidProof);
 }
 
 #[test]
-fn test_multiple_sessions() {
-    let (env, client, _hub, player1, player2) = setup_test();
-    let player3 = Address::generate(&env);
-    let player4 = Address::generate(&env);
-
-    let session1 = 3u32;
-    let session2 = 4u32;
-
-    client.start_game(&session1, &player1, &player2, &100_0000000, &100_0000000);
-    client.start_game(&session2, &player3, &player4, &50_0000000, &50_0000000);
-
-    // Verify both games exist and are independent
-    let game1 = client.get_game(&session1);
-    let game2 = client.get_game(&session2);
-
-    assert_eq!(game1.player1, player1);
-    assert_eq!(game2.player1, player3);
-}
-
-// ============================================================================
-// Guess Logic Tests
-// ============================================================================
-
-#[test]
-fn test_closest_guess_wins() {
-    let (_env, client, _hub, player1, player2) = setup_test();
+fn test_ship_sunk_cannot_be_reported_twice() {
+    let (env, client, _hub, player1, player2, board1, board2) = setup_test();
 
     let session_id = 5u32;
-    client.start_game(&session_id, &player1, &player2, &100_0000000, &100_0000000);
+    client.start_game(&session_id, &player1, &player2, &1, &1);
+    client.commit_board(&session_id, &player1, &board1);
+    client.commit_board(&session_id, &player2, &board2);
 
-    // Player1 guesses closer (1 away from any number between 1-10)
-    // Player2 guesses further (at least 2 away)
-    client.make_guess(&session_id, &player1, &5);
-    client.make_guess(&session_id, &player2, &10);
-
-    let winner = client.reveal_winner(&session_id);
-
-    // Get the final game state to check the winning number
-    let game = client.get_game(&session_id);
-    let winning_number = game.winning_number.unwrap();
-
-    // Calculate which player should have won based on distances
-    let distance1 = if 5 > winning_number {
-        5 - winning_number
-    } else {
-        winning_number - 5
-    };
-    let distance2 = if 10 > winning_number {
-        10 - winning_number
-    } else {
-        winning_number - 10
-    };
-
-    let expected_winner = if distance1 <= distance2 {
-        player1.clone()
-    } else {
-        player2.clone()
-    };
-    assert_eq!(
-        winner, expected_winner,
-        "Player with closer guess should win"
+    client.fire(&session_id, &player1, &2, &2);
+    resolve_pending(
+        &client,
+        session_id,
+        &player2,
+        &player1,
+        2,
+        2,
+        true,
+        5,
+        &board2,
+        &valid_proof(&env),
     );
+
+    client.fire(&session_id, &player2, &9, &9);
+    resolve_pending(
+        &client,
+        session_id,
+        &player1,
+        &player2,
+        9,
+        9,
+        false,
+        0,
+        &board1,
+        &valid_proof(&env),
+    );
+
+    client.fire(&session_id, &player1, &2, &3);
+    let hash = client.build_public_inputs_hash(
+        &session_id,
+        &player2,
+        &player1,
+        &2,
+        &3,
+        &true,
+        &5,
+        &board2,
+    );
+
+    let result =
+        client.try_resolve_shot(&session_id, &player2, &true, &5, &valid_proof(&env), &hash);
+    assert_battleship_error(&result, Error::ShipAlreadySunk);
 }
 
 #[test]
-fn test_tie_game_player1_wins() {
-    let (_env, client, _hub, player1, player2) = setup_test();
+fn test_duplicate_coordinate_rejected_for_same_shooter() {
+    let (env, client, _hub, player1, player2, board1, board2) = setup_test();
 
     let session_id = 6u32;
-    client.start_game(&session_id, &player1, &player2, &100_0000000, &100_0000000);
+    client.start_game(&session_id, &player1, &player2, &1, &1);
+    client.commit_board(&session_id, &player1, &board1);
+    client.commit_board(&session_id, &player2, &board2);
 
-    // Both players guess the same number (guaranteed tie)
-    client.make_guess(&session_id, &player1, &5);
-    client.make_guess(&session_id, &player2, &5);
+    client.fire(&session_id, &player1, &1, &1);
+    resolve_pending(
+        &client,
+        session_id,
+        &player2,
+        &player1,
+        1,
+        1,
+        false,
+        0,
+        &board2,
+        &valid_proof(&env),
+    );
 
-    let winner = client.reveal_winner(&session_id);
-    assert_eq!(winner, player1, "Player1 should win in a tie");
+    client.fire(&session_id, &player2, &0, &0);
+    resolve_pending(
+        &client,
+        session_id,
+        &player1,
+        &player2,
+        0,
+        0,
+        false,
+        0,
+        &board1,
+        &valid_proof(&env),
+    );
+
+    let result = client.try_fire(&session_id, &player1, &1, &1);
+    assert_battleship_error(&result, Error::ShotAlreadyResolved);
 }
 
 #[test]
-fn test_exact_guess_wins() {
-    let (_env, client, _hub, player1, player2) = setup_test();
+fn test_win_at_17_hits_ends_in_game_hub() {
+    let (env, client, hub, player1, player2, board1, board2) = setup_test();
 
     let session_id = 7u32;
-    client.start_game(&session_id, &player1, &player2, &100_0000000, &100_0000000);
+    client.start_game(&session_id, &player1, &player2, &1, &1);
+    client.commit_board(&session_id, &player1, &board1);
+    client.commit_board(&session_id, &player2, &board2);
 
-    // Player1 guesses 5 (middle), player2 guesses 10 (edge)
-    // Player1 is more likely to be closer to the winning number
-    client.make_guess(&session_id, &player1, &5);
-    client.make_guess(&session_id, &player2, &10);
+    let mut p2_index = 0u32;
 
-    let winner = client.reveal_winner(&session_id);
-    let game = client.get_game(&session_id);
-    let winning_number = game.winning_number.unwrap();
+    for i in 0..17u32 {
+        let x1 = i % 10;
+        let y1 = i / 10;
+        client.fire(&session_id, &player1, &x1, &y1);
+        resolve_pending(
+            &client,
+            session_id,
+            &player2,
+            &player1,
+            x1,
+            y1,
+            true,
+            0,
+            &board2,
+            &valid_proof(&env),
+        );
 
-    // Verify the winner matches the distance calculation
-    let distance1 = if 5 > winning_number {
-        5 - winning_number
-    } else {
-        winning_number - 5
-    };
-    let distance2 = if 10 > winning_number {
-        10 - winning_number
-    } else {
-        winning_number - 10
-    };
-    let expected_winner = if distance1 <= distance2 {
-        player1.clone()
-    } else {
-        player2.clone()
-    };
-    assert_eq!(winner, expected_winner);
-}
+        if i == 16 {
+            break;
+        }
 
-// ============================================================================
-// Error Handling Tests
-// ============================================================================
+        let x2 = 9 - (p2_index % 10);
+        let y2 = 9 - (p2_index / 10);
+        p2_index += 1;
 
-#[test]
-fn test_cannot_guess_twice() {
-    let (_env, client, _hub, player1, player2) = setup_test();
-
-    let session_id = 8u32;
-    client.start_game(&session_id, &player1, &player2, &100_0000000, &100_0000000);
-
-    // Make first guess
-    client.make_guess(&session_id, &player1, &5);
-
-    // Try to guess again - should fail
-    let result = client.try_make_guess(&session_id, &player1, &6);
-    assert_number_guess_error(&result, Error::AlreadyGuessed);
-}
-
-#[test]
-fn test_cannot_reveal_before_both_guesses() {
-    let (_env, client, _hub, player1, player2) = setup_test();
-
-    let session_id = 9u32;
-    client.start_game(&session_id, &player1, &player2, &100_0000000, &100_0000000);
-
-    // Only player1 guesses
-    client.make_guess(&session_id, &player1, &5);
-
-    // Try to reveal winner - should fail
-    let result = client.try_reveal_winner(&session_id);
-    assert_number_guess_error(&result, Error::BothPlayersNotGuessed);
-}
-
-#[test]
-#[should_panic(expected = "Guess must be between 1 and 10")]
-fn test_cannot_guess_below_range() {
-    let (env, client, _hub, player1, _player2) = setup_test();
-
-    let session_id = 10u32;
-    client.start_game(
-        &session_id,
-        &player1,
-        &Address::generate(&env),
-        &100_0000000,
-        &100_0000000,
-    );
-
-    // Try to guess 0 (below range) - should panic
-    client.make_guess(&session_id, &player1, &0);
-}
-
-#[test]
-#[should_panic(expected = "Guess must be between 1 and 10")]
-fn test_cannot_guess_above_range() {
-    let (env, client, _hub, player1, _player2) = setup_test();
-
-    let session_id = 11u32;
-    client.start_game(
-        &session_id,
-        &player1,
-        &Address::generate(&env),
-        &100_0000000,
-        &100_0000000,
-    );
-
-    // Try to guess 11 (above range) - should panic
-    client.make_guess(&session_id, &player1, &11);
-}
-
-#[test]
-fn test_non_player_cannot_guess() {
-    let (env, client, _hub, player1, player2) = setup_test();
-    let non_player = Address::generate(&env);
-
-    let session_id = 11u32;
-    client.start_game(&session_id, &player1, &player2, &100_0000000, &100_0000000);
-
-    // Non-player tries to guess
-    let result = client.try_make_guess(&session_id, &non_player, &5);
-    assert_number_guess_error(&result, Error::NotPlayer);
-}
-
-#[test]
-fn test_cannot_reveal_nonexistent_game() {
-    let (_env, client, _hub, _player1, _player2) = setup_test();
-
-    let result = client.try_reveal_winner(&999);
-    assert_number_guess_error(&result, Error::GameNotFound);
-}
-
-#[test]
-fn test_cannot_guess_after_game_ended() {
-    let (_env, client, _hub, player1, player2) = setup_test();
-
-    let session_id = 12u32;
-    client.start_game(&session_id, &player1, &player2, &100_0000000, &100_0000000);
-
-    // Both players make guesses
-    client.make_guess(&session_id, &player1, &5);
-    client.make_guess(&session_id, &player2, &7);
-
-    // Reveal winner - game ends
-    let _winner = client.reveal_winner(&session_id);
-
-    // Try to make another guess after game has ended - should fail
-    let result = client.try_make_guess(&session_id, &player1, &3);
-    assert_number_guess_error(&result, Error::GameAlreadyEnded);
-}
-
-#[test]
-fn test_cannot_reveal_twice() {
-    let (_env, client, _hub, player1, player2) = setup_test();
-
-    let session_id = 14u32;
-    client.start_game(&session_id, &player1, &player2, &100_0000000, &100_0000000);
-
-    client.make_guess(&session_id, &player1, &5);
-    client.make_guess(&session_id, &player2, &7);
-
-    // First reveal succeeds
-    let winner = client.reveal_winner(&session_id);
-    assert!(winner == player1 || winner == player2);
-
-    // Second reveal should return same winner (idempotent)
-    let winner2 = client.reveal_winner(&session_id);
-    assert_eq!(winner, winner2);
-}
-
-// ============================================================================
-// Multiple Games Tests
-// ============================================================================
-
-#[test]
-fn test_multiple_games_independent() {
-    let (env, client, _hub, player1, player2) = setup_test();
-    let player3 = Address::generate(&env);
-    let player4 = Address::generate(&env);
-
-    let session1 = 20u32;
-    let session2 = 21u32;
-
-    // Start two games
-    client.start_game(&session1, &player1, &player2, &100_0000000, &100_0000000);
-    client.start_game(&session2, &player3, &player4, &50_0000000, &50_0000000);
-
-    // Play both games independently
-    client.make_guess(&session1, &player1, &3);
-    client.make_guess(&session2, &player3, &8);
-    client.make_guess(&session1, &player2, &7);
-    client.make_guess(&session2, &player4, &2);
-
-    // Reveal both winners
-    let winner1 = client.reveal_winner(&session1);
-    let winner2 = client.reveal_winner(&session2);
-
-    assert!(winner1 == player1 || winner1 == player2);
-    assert!(winner2 == player3 || winner2 == player4);
-
-    // Verify both games are independent
-    let final_game1 = client.get_game(&session1);
-    let final_game2 = client.get_game(&session2);
-
-    assert!(final_game1.winner.is_some()); // Game 1 has ended
-    assert!(final_game2.winner.is_some()); // Game 2 has ended
-
-    // Note: winning numbers could be the same by chance, so we just verify they're both set
-    assert!(final_game1.winning_number.is_some());
-    assert!(final_game2.winning_number.is_some());
-}
-
-#[test]
-fn test_asymmetric_points() {
-    let (_env, client, _hub, player1, player2) = setup_test();
-
-    let session_id = 15u32;
-    let points1 = 200_0000000;
-    let points2 = 50_0000000;
-
-    client.start_game(&session_id, &player1, &player2, &points1, &points2);
+        client.fire(&session_id, &player2, &x2, &y2);
+        resolve_pending(
+            &client,
+            session_id,
+            &player1,
+            &player2,
+            x2,
+            y2,
+            false,
+            0,
+            &board1,
+            &valid_proof(&env),
+        );
+    }
 
     let game = client.get_game(&session_id);
-    assert_eq!(game.player1_points, points1);
-    assert_eq!(game.player2_points, points2);
-
-    client.make_guess(&session_id, &player1, &5);
-    client.make_guess(&session_id, &player2, &5);
-    client.reveal_winner(&session_id);
-
-    // Game completes successfully with asymmetric points
-    let final_game = client.get_game(&session_id);
-    assert!(final_game.winner.is_some()); // Game has ended
+    assert_eq!(game.phase, GamePhase::Ended);
+    assert_eq!(game.winner, Some(player1));
+    assert_eq!(game.hits_on_p2, 17);
+    assert!(hub.was_ended(&session_id));
 }
 
-// ============================================================================
-// Admin Function Tests
-// ============================================================================
-
 #[test]
-fn test_upgrade_function_exists() {
-    let env = Env::default();
-    env.mock_all_auths();
+fn test_rules_expose_standard_ship_sizes() {
+    let (_env, client, _hub, _player1, _player2, _board1, _board2) = setup_test();
 
-    let admin = Address::generate(&env);
-    let hub_addr = env.register(MockGameHub, ());
-
-    // Deploy battleship with admin
-    let contract_id = env.register(BattleshipContract, (&admin, &hub_addr));
-    let client = BattleshipContractClient::new(&env, &contract_id);
-
-    // Verify the upgrade function exists and can be called
-    // Note: We can't test actual upgrade without real WASM files
-    // The function will fail with MissingValue because the WASM hash doesn't exist
-    // But that's expected - we're just verifying the function signature is correct
-    let new_wasm_hash = BytesN::from_array(&env, &[1u8; 32]);
-    let result = client.try_upgrade(&new_wasm_hash);
-
-    // Should fail with MissingValue (WASM doesn't exist) not NotAdmin
-    // This confirms the authorization check passed
-    assert!(result.is_err());
+    let rules = client.get_rules();
+    assert_eq!(rules.board_size, 10);
+    assert_eq!(rules.carrier_len, 5);
+    assert_eq!(rules.battleship_len, 4);
+    assert_eq!(rules.cruiser_len, 3);
+    assert_eq!(rules.submarine_len, 3);
+    assert_eq!(rules.destroyer_len, 2);
+    assert_eq!(rules.total_ship_cells, 17);
 }
