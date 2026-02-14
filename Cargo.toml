@@ -3,14 +3,19 @@ resolver = "2"
 version = "0.1.2"
 members = [
   "contracts/mock-game-hub",
-  "contracts/twenty-one",
-  "contracts/number-guess",
-  "contracts/dice-duel",
   "contracts/battleship",
+  "contracts/circom-groth16-verifier",
 ]
 
 [workspace.dependencies]
 soroban-sdk = "25.0.2"
+contract-types = { git = "https://github.com/NethermindEth/stellar-private-payments" }
+soroban-utils = { git = "https://github.com/NethermindEth/stellar-private-payments" }
+ark-bn254 = { version = "0.4", default-features = false }
+ark-ff = { version = "0.4", default-features = false }
+ark-groth16 = { version = "0.4", default-features = false }
+ark-relations = { version = "0.4", default-features = false }
+ark-std = { version = "0.4", default-features = false }
 
 [profile.release]
 opt-level = "z"

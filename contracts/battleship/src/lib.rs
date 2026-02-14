@@ -604,7 +604,7 @@ impl BattleshipContract {
         payload.append(&Bytes::from_array(env, &board_commitment.to_array()));
         payload.append(&defender.to_string().to_bytes());
         payload.append(&shooter.to_string().to_bytes());
-        env.crypto().keccak256(&payload)
+        env.crypto().keccak256(&payload).into()
     }
 
     fn load_game(env: &Env, key: &DataKey) -> Result<Game, Error> {
