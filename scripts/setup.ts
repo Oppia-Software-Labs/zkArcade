@@ -19,14 +19,15 @@ console.log("🎮 Stellar Game Studio Setup\n");
 console.log("This will:");
 console.log("  0. Install JavaScript dependencies (if needed)");
 console.log("  1. Build Soroban contracts");
-console.log("  2. Deploy to Stellar testnet");
-console.log("  3. Generate TypeScript bindings");
-console.log("  4. Write local testnet configuration\n");
+console.log("  2. Build Circom circuits");
+console.log("  3. Deploy to Stellar testnet");
+console.log("  4. Generate TypeScript bindings");
+console.log("  5. Write local testnet configuration\n");
 
 // Step 0: Ensure JavaScript dependencies are installed
 if (!existsSync("node_modules/@stellar/stellar-sdk")) {
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  console.log("Step 0/4: Installing dependencies");
+  console.log("Step 0/5: Installing dependencies");
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
   try {
     await $`bun install`;
@@ -38,7 +39,7 @@ if (!existsSync("node_modules/@stellar/stellar-sdk")) {
 
 // Step 1: Build contracts
 console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-console.log("Step 1/4: Building contracts");
+console.log("Step 1/5: Building contracts");
 console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 try {
   await $`bun run build`;
@@ -47,9 +48,20 @@ try {
   process.exit(1);
 }
 
-// Step 2: Deploy contracts
+// Step 2: Build circuits
 console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-console.log("Step 2/4: Deploying to testnet");
+console.log("Step 2/5: Building Circom circuits");
+console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+try {
+  await $`bun run circuits:build`;
+} catch (error) {
+  console.error("\n❌ Circuit build failed. Install circom (e.g. npm install -g circom@2.1.x) and ensure circuits compile.");
+  process.exit(1);
+}
+
+// Step 3: Deploy contracts
+console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+console.log("Step 3/5: Deploying to testnet");
 console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 try {
   await $`bun run deploy`;
@@ -58,9 +70,9 @@ try {
   process.exit(1);
 }
 
-// Step 3: Generate bindings
+// Step 4: Generate bindings
 console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-console.log("Step 3/4: Generating TypeScript bindings");
+console.log("Step 4/5: Generating TypeScript bindings");
 console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 try {
   await $`bun run bindings`;
@@ -69,9 +81,9 @@ try {
   process.exit(1);
 }
 
-// Step 4: Configure studio frontend
+// Step 5: Configure studio frontend
 console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-console.log("Step 4/4: Writing local configuration");
+console.log("Step 5/5: Writing local configuration");
 console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
 let rpcUrl = 'https://soroban-testnet.stellar.org';

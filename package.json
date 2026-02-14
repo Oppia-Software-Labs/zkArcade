@@ -10,10 +10,13 @@
     "create": "bun run scripts/create.ts",
     "publish": "bun run scripts/publish.ts",
     "dev": "bun --cwd=sgs_frontend run dev",
-    "dev:game": "bun run scripts/dev-game.ts"
+    "dev:game": "bun run scripts/dev-game.ts",
+    "circuits:build": "bun run scripts/circuits-build.ts"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "circomlib": "^2.0.5",
+    "snarkjs": "^0.7.6"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^14.5.0"
