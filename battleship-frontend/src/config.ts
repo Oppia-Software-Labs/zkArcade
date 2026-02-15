@@ -18,6 +18,11 @@ export const config = {
 
   devPlayer1Address: import.meta.env.VITE_DEV_PLAYER1_ADDRESS || '',
   devPlayer2Address: import.meta.env.VITE_DEV_PLAYER2_ADDRESS || '',
+
+  /** URL for zk verifier (used in "Share on X" when player wins 3D Battleship) */
+  zkVerifierUrl:
+    import.meta.env.VITE_ZK_VERIFIER_URL ||
+    (typeof window !== 'undefined' ? `${window.location.origin}/verifier` : '/verifier'),
 };
 
 if (Object.keys(config.contractIds).length === 0) {
