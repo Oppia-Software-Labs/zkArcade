@@ -16,7 +16,9 @@ template ResolveShot() {
     signal input shot_y;
     signal input is_hit;
     signal input sunk_ship; // 0 = none, 1..5 = Carrier..Destroyer
-    signal input board_commitment;
+    // Board commitment as hi/lo limbs (matches adapter split_u256_to_fr_limbs: hi = bytes 0..15, lo = bytes 16..31).
+    signal input board_commitment_hi;
+    signal input board_commitment_lo;
 
     // Split u256 hash limbs (contract side uses keccak). These are exposed so
     // the verifier adapter can bind to `public_inputs_hash` from the contract call.
@@ -30,7 +32,9 @@ template ResolveShot() {
         board.ship_dir[i] <== ship_dir[i];
     }
     board.salt <== salt;
-    board.board_commitment === board_commitment;
+    // Constrain full board commitment to hi/lo limbs: board_commitment_hi * 2^128 + board_commitment_lo
+    var TWO_128 = 340282366920938463463374607431768211456;
+    board.board_commitment === board_commitment_hi * TWO_128 + board_commitment_lo;
 
     component hitBool = AssertBoolean();
     hitBool.in <== is_hit;
@@ -140,4 +144,4 @@ template ResolveShot() {
     hash_binding_witness <== public_inputs_hash_hi + public_inputs_hash_lo;
 }
 
-component main = ResolveShot();
+component main {public [board_commitment_hi, board_commitment_lo, public_inputs_hash_hi, public_inputs_hash_lo]} = ResolveShot();
