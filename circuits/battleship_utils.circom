@@ -110,11 +110,17 @@ template BoardLayout() {
         }
     }
 
-    component h = Poseidon(18);
-    for (var i = 0; i < 17; i++) {
-        h.inputs[i] <== cell_idx[i];
+    // circomlib Poseidon supports at most 16 inputs; we have 17 cells + salt = 18.
+    // Chain two hashes: first 16 cells -> h1, then h1 + cell_idx[16] + salt -> commitment.
+    component h1 = Poseidon(16);
+    for (var i = 0; i < 16; i++) {
+        h1.inputs[i] <== cell_idx[i];
     }
-    h.inputs[17] <== salt;
 
-    board_commitment <== h.out;
+    component h2 = Poseidon(3);
+    h2.inputs[0] <== h1.out;
+    h2.inputs[1] <== cell_idx[16];
+    h2.inputs[2] <== salt;
+
+    board_commitment <== h2.out;
 }

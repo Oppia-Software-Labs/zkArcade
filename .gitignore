@@ -4,6 +4,12 @@ test_snapshots/
 target/
 *.wasm
 
+# Circuit build (r1cs, sym, wasm, js from circom)
+circuits/build/
+
+# Powers-of-tau (large; generate or download locally)
+*.ptau
+
 # Deployment info
 deployment.json
 
