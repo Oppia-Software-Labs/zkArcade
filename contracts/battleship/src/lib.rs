@@ -1,145 +1,18 @@
 #![no_std]
 
-use soroban_sdk::{
-    contract, contractclient, contracterror, contractimpl, contracttype, vec, Address, Bytes,
-    BytesN, Env, IntoVal,
-};
+mod error;
+mod interfaces;
+mod storage;
+mod types;
 
-#[contractclient(name = "GameHubClient")]
-pub trait GameHub {
-    fn start_game(
-        env: Env,
-        game_id: Address,
-        session_id: u32,
-        player1: Address,
-        player2: Address,
-        player1_points: i128,
-        player2_points: i128,
-    );
+pub use error::Error;
+pub use types::{Game, GamePhase, GameRules, ShotResult, ShipType};
 
-    fn end_game(env: Env, session_id: u32, player1_won: bool);
-}
+use soroban_sdk::{contract, contractimpl, vec, Address, Bytes, BytesN, Env, IntoVal};
 
-// Adapter verifier interface for Battleship proofs.
-// A verifier contract can internally call a Groth16 verifier and return `true` only for valid proofs.
-#[contractclient(name = "BattleshipVerifierClient")]
-pub trait BattleshipVerifier {
-    fn verify(
-        env: Env,
-        board_commitment: BytesN<32>,
-        public_inputs_hash: BytesN<32>,
-        proof_payload: Bytes,
-    ) -> bool;
-}
-
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
-#[repr(u32)]
-pub enum Error {
-    GameNotFound = 1,
-    GameAlreadyExists = 2,
-    NotPlayer = 3,
-    SelfPlayNotAllowed = 4,
-    GameAlreadyEnded = 5,
-    InvalidPhase = 6,
-    BoardAlreadyCommitted = 7,
-    BoardNotCommitted = 8,
-    NotYourTurn = 9,
-    PendingShotExists = 10,
-    NoPendingShot = 11,
-    InvalidCoordinate = 12,
-    ShotAlreadyResolved = 13,
-    InvalidDefender = 14,
-    InvalidShipType = 15,
-    InvalidSunkShip = 16,
-    ShipAlreadySunk = 17,
-    InvalidPublicInputsHash = 18,
-    InvalidProof = 19,
-    TooManyHits = 20,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum GamePhase {
-    WaitingForBoards,
-    InProgress,
-    Ended,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ShipType {
-    Carrier,
-    Battleship,
-    Cruiser,
-    Submarine,
-    Destroyer,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ShotResult {
-    pub is_hit: bool,
-    // 0 = none, 1..5 = Carrier..Destroyer
-    pub sunk_ship: u32,
-    pub winner: Option<Address>,
-    pub next_turn: Option<Address>,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GameRules {
-    pub board_size: u32,
-    pub carrier_len: u32,
-    pub battleship_len: u32,
-    pub cruiser_len: u32,
-    pub submarine_len: u32,
-    pub destroyer_len: u32,
-    pub total_ship_cells: u32,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Game {
-    pub player1: Address,
-    pub player2: Address,
-    pub player1_points: i128,
-    pub player2_points: i128,
-    pub phase: GamePhase,
-    pub turn: Option<Address>,
-    pub board_commitment_p1: Option<BytesN<32>>,
-    pub board_commitment_p2: Option<BytesN<32>>,
-    pub pending_shot_shooter: Option<Address>,
-    pub pending_shot_x: u32,
-    pub pending_shot_y: u32,
-    // Bitmaps over 100 cells. Index = y * 10 + x.
-    pub shots_p1_to_p2: u128,
-    pub shots_p2_to_p1: u128,
-    pub hits_on_p1: u32,
-    pub hits_on_p2: u32,
-    // Bit mask for sunk ships for each player board.
-    pub sunk_ships_on_p1: u32,
-    pub sunk_ships_on_p2: u32,
-    pub winner: Option<Address>,
-}
-
-#[contracttype]
-#[derive(Clone)]
-pub enum DataKey {
-    Game(u32),
-    GameHubAddress,
-    VerifierAddress,
-    Admin,
-}
-
-const GAME_TTL_LEDGERS: u32 = 518_400;
-const BOARD_SIZE: u32 = 10;
-const TOTAL_SHIP_CELLS: u32 = 17;
-const SHIP_CARRIER_LEN: u32 = 5;
-const SHIP_BATTLESHIP_LEN: u32 = 4;
-const SHIP_CRUISER_LEN: u32 = 3;
-const SHIP_SUBMARINE_LEN: u32 = 3;
-const SHIP_DESTROYER_LEN: u32 = 2;
+use interfaces::{BattleshipVerifierClient, GameHubClient};
+use storage::{load_game, save_game, DataKey, BOARD_SIZE, SHIP_BATTLESHIP_LEN, SHIP_CARRIER_LEN,
+              SHIP_CRUISER_LEN, SHIP_DESTROYER_LEN, SHIP_SUBMARINE_LEN, TOTAL_SHIP_CELLS};
 
 #[contract]
 pub struct BattleshipContract;
@@ -222,7 +95,7 @@ impl BattleshipContract {
             winner: None,
         };
 
-        Self::save_game(&env, &key, &game);
+        save_game(&env, &key, &game);
         Ok(())
     }
 
@@ -235,7 +108,7 @@ impl BattleshipContract {
         player.require_auth();
 
         let key = DataKey::Game(session_id);
-        let mut game = Self::load_game(&env, &key)?;
+        let mut game = load_game(&env, &key)?;
 
         if game.phase == GamePhase::Ended {
             return Err(Error::GameAlreadyEnded);
@@ -265,7 +138,7 @@ impl BattleshipContract {
             game.turn = Some(game.player1.clone());
         }
 
-        Self::save_game(&env, &key, &game);
+        save_game(&env, &key, &game);
         Ok(())
     }
 
@@ -273,7 +146,7 @@ impl BattleshipContract {
         shooter.require_auth();
 
         let key = DataKey::Game(session_id);
-        let mut game = Self::load_game(&env, &key)?;
+        let mut game = load_game(&env, &key)?;
 
         if game.phase == GamePhase::Ended {
             return Err(Error::GameAlreadyEnded);
@@ -310,7 +183,7 @@ impl BattleshipContract {
         game.pending_shot_shooter = Some(shooter);
         game.pending_shot_x = x;
         game.pending_shot_y = y;
-        Self::save_game(&env, &key, &game);
+        save_game(&env, &key, &game);
 
         Ok(())
     }
@@ -325,7 +198,7 @@ impl BattleshipContract {
         public_inputs_hash: BytesN<32>,
     ) -> Result<ShotResult, Error> {
         let key = DataKey::Game(session_id);
-        let mut game = Self::load_game(&env, &key)?;
+        let mut game = load_game(&env, &key)?;
 
         if game.phase == GamePhase::Ended {
             return Err(Error::GameAlreadyEnded);
@@ -465,7 +338,7 @@ impl BattleshipContract {
         }
 
         game.pending_shot_shooter = None;
-        Self::save_game(&env, &key, &game);
+        save_game(&env, &key, &game);
 
         Ok(ShotResult {
             is_hit,
@@ -501,7 +374,7 @@ impl BattleshipContract {
 
     pub fn get_game(env: Env, session_id: u32) -> Result<Game, Error> {
         let key = DataKey::Game(session_id);
-        Self::load_game(&env, &key)
+        load_game(&env, &key)
     }
 
     pub fn get_rules(_env: Env) -> GameRules {
@@ -608,20 +481,6 @@ impl BattleshipContract {
         payload.append(&defender.to_string().to_bytes());
         payload.append(&shooter.to_string().to_bytes());
         env.crypto().keccak256(&payload).into()
-    }
-
-    fn load_game(env: &Env, key: &DataKey) -> Result<Game, Error> {
-        env.storage()
-            .temporary()
-            .get(key)
-            .ok_or(Error::GameNotFound)
-    }
-
-    fn save_game(env: &Env, key: &DataKey, game: &Game) {
-        env.storage().temporary().set(key, game);
-        env.storage()
-            .temporary()
-            .extend_ttl(key, GAME_TTL_LEDGERS, GAME_TTL_LEDGERS);
     }
 
     fn opponent(game: &Game, player: &Address) -> Result<Address, Error> {
