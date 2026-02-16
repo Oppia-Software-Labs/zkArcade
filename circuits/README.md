@@ -5,7 +5,132 @@ This folder contains two Circom circuits for the Battleship flow:
 - `board_commit.circom`: proves board validity and outputs `board_commitment`
 - `resolve_shot.circom`: proves shot hit/miss + sunk-ship transition
 
-Shared helpers are in `battleship_utils.circom`.
+Shared helpers are in `battleship_utils.circom`. On-chain verification uses only **resolve_shot** (it embeds board validity); build both if the frontend uses `board_commit` WASM for commitment generation.
+
+---
+
+## Prerequisites and install
+
+1. **Circom** (recommend 2.1.x)  
+   Install the compiler so `circom` is on your PATH:
+   ```bash
+   npm install -g circom@2.1.x
+   ```
+   See [Circom installation](https://docs.circom.io/getting-started/installation/).
+
+2. **circomlib and snarkjs**  
+   From the repo root, install JS dependencies (used for Poseidon in circuits and for Groth16 setup/prove):
+   ```bash
+   bun install
+   ```
+   This adds `circomlib` and `snarkjs` to `node_modules`. The build script uses `-l node_modules` so `include "circomlib/circuits/poseidon.circom"` resolves.
+
+---
+
+## Build
+
+From the repo root:
+
+```bash
+bun run circuits:build
+```
+
+This compiles `board_commit.circom` and `resolve_shot.circom` with circom (R1CS, WASM, symbol files) into **circuits/build**, using `node_modules` for circomlib. Requires `circom` and `node_modules/circomlib` to be present.
+
+Manual compile (if you need to run circom directly):
+
+```bash
+circom circuits/resolve_shot.circom --r1cs --wasm --sym -l node_modules -o circuits/build
+circom circuits/board_commit.circom --r1cs --wasm --sym -l node_modules -o circuits/build
+```
+
+---
+
+## Powers-of-tau (ptau)
+
+The Groth16 trusted setup requires a **powers-of-tau** file whose size is at least as large as the number of constraints of `resolve_shot`.
+
+1. **Check constraint count:**
+   ```bash
+   npx snarkjs r1cs info circuits/build/resolve_shot.r1cs
+   ```
+   Use a ptau with power ≥ log₂(constraints) (e.g. if you have ~2^10 constraints, use at least 2^10).
+
+2. **Obtain a ptau file:**
+   - Download from the [Hermez Phase 1](https://github.com/hermeznetwork/phase2ceremony) ceremony (e.g. `powersOfTau28_hez_final_12.ptau` for 2^12).
+   - Or generate one (smaller, for testing):
+     ```bash
+     npx snarkjs ptn bn128 12 ptau.ptau
+     ```
+
+---
+
+## Trusted setup and verification key
+
+1. **Build circuits** (if not already):
+   ```bash
+   bun run circuits:build
+   ```
+
+2. **Run Groth16 setup and export snarkjs vkey:**
+   ```bash
+   bun run circuits:setup-vkey -- --ptau <path-to.ptau>
+   ```
+   Optional: add `--contribute` to run an interactive zkey contribution (produces `resolve_shot_final.zkey`).  
+   Outputs: `circuits/build/resolve_shot_0000.zkey`, `circuits/build/vkey.json`.
+
+3. **Convert vkey for the Soroban verifier:**
+   ```bash
+   bun run circuits:vkey-to-soroban
+   ```
+   Default: reads `circuits/build/vkey.json`, writes `circuits/build/vkey_soroban.json`. Custom paths:
+   ```bash
+   bun run circuits:vkey-to-soroban circuits/build/vkey.json --out circuits/build/vkey_soroban.json
+   ```
+   Use `vkey_soroban.json` as the verification key when deploying the **circom-groth16-verifier** contract.
+
+---
+
+## Witness and proof (optional)
+
+To exercise the full pipeline locally (compile → setup → witness → prove → verify):
+
+1. **Build circuits and run trusted setup** (see above).
+
+2. **Create an input file** (e.g. `input.json`) with all private and public inputs; see [resolve_shot witness and public inputs](#resolve_shot-witness-and-public-inputs) and `example_input_resolve_shot.json`.
+
+3. **Generate witness:**
+   ```bash
+   node circuits/build/resolve_shot_js/generate_witness.js circuits/build/resolve_shot_js/resolve_shot.wasm input.json witness.wtns
+   ```
+
+4. **Generate proof:**
+   ```bash
+   npx snarkjs groth16 prove circuits/build/resolve_shot_0000.zkey witness.wtns proof.json public.json
+   ```
+
+5. **Verify (off-chain):**
+   ```bash
+   npx snarkjs groth16 verify circuits/build/vkey.json public.json proof.json
+   ```
+
+The same `public.json` ordering (four public inputs: board_commitment_hi, board_commitment_lo, public_inputs_hash_hi, public_inputs_hash_lo) must be used when calling the on-chain verifier.
+
+---
+
+## Deploy order
+
+For on-chain verification, use this order:
+
+1. **Build circuits** → `bun run circuits:build`
+2. **Run trusted setup** → `bun run circuits:setup-vkey -- --ptau <ptau>`
+3. **Export vkey** → written by setup script to `circuits/build/vkey.json`
+4. **Convert vkey** → `bun run circuits:vkey-to-soroban` → `circuits/build/vkey_soroban.json`
+5. **Deploy circom-groth16-verifier** with the converted verification key (VerificationKeyBytes).
+6. **Deploy battleship-verifier-adapter** with the verifier contract address.
+7. **Deploy battleship** with the adapter address (or, if the adapter is inlined, with the verifier address).
+
+---
 
 ## Constraints Implemented
 
@@ -69,42 +194,3 @@ See `example_input_resolve_shot.json` for the required keys and types. Replace p
 ```
 
 When generating the witness (`snarkjs wtns calculate ...`) and when calling the contract, pass the **same four public values in the same order** so they match the stored `board_commitment` and the `public_inputs_hash` used in the call.
-
-## Trusted setup and verification key
-
-1. **Build circuits** (requires circom and circomlib):  
-   `bun run circuits:build`
-
-2. **Obtain a powers-of-tau (ptau) file.** The ptau size must be at least as large as the number of constraints. Run:
-   ```bash
-   npx snarkjs r1cs info circuits/build/resolve_shot.r1cs
-   ```
-   Use a ptau with power ≥ log2(constraints). You can download from the [Hermez Phase 1](https://github.com/hermeznetwork/phase2ceremony) ceremony (e.g. `powersOfTau28_hez_final_12.ptau` for 2^12) or generate one with:
-   ```bash
-   npx snarkjs ptn bn128 12 ptau.ptau
-   ```
-
-3. **Run Groth16 setup and export vkey:**  
-   `bun run circuits:setup-vkey -- --ptau <path-to.ptau>`  
-   Optionally add `--contribute` to run an interactive zkey contribution.  
-   This writes `circuits/build/resolve_shot_0000.zkey` and `circuits/build/vkey.json`.
-
-4. **Convert vkey for Soroban:**  
-   `bun run circuits:vkey-to-soroban.ts circuits/build/vkey.json --out circuits/build/vkey_soroban.json`  
-   (or `bun run circuits:vkey-to-soroban` for defaults).  
-   Use `vkey_soroban.json` as the verification key when deploying the circom-groth16-verifier contract.
-
-## Compile Example
-
-Requires Circom and circomlib include path.
-
-```bash
-circom circuits/board_commit.circom --r1cs --wasm --sym -o circuits/build
-circom circuits/resolve_shot.circom --r1cs --wasm --sym -o circuits/build
-```
-
-If circomlib is not globally resolved, compile with include path:
-
-```bash
-circom circuits/resolve_shot.circom --r1cs --wasm --sym -l node_modules -o circuits/build
-```
