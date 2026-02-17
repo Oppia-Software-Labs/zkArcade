@@ -1,13 +1,15 @@
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { config } from './config';
 import { Layout } from './components/Layout';
 import { useWallet } from './hooks/useWallet';
 import { BattleshipGame } from './games/battleship/BattleshipGame';
+import { Battleship3D } from './components/Battleship3D';
 
 const GAME_ID = 'battleship';
 const GAME_TITLE = import.meta.env.VITE_GAME_TITLE || 'Battleship';
 const GAME_TAGLINE = import.meta.env.VITE_GAME_TAGLINE || 'On-chain game on Stellar';
 
-export default function App() {
+function HomePage() {
   const { publicKey, isConnected, isConnecting, error, isDevModeAvailable } = useWallet();
   const userAddress = publicKey ?? '';
   const contractId = config.contractIds[GAME_ID] || '';
@@ -50,5 +52,16 @@ export default function App() {
         />
       )}
     </Layout>
+  );
+}
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<HomePage />} />
+        <Route path="/battleship" element={<Battleship3D />} />
+      </Routes>
+    </BrowserRouter>
   );
 }
