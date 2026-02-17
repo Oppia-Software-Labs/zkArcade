@@ -71,21 +71,49 @@ if (existsSync("deployment.json")) {
 const missing: string[] = [];
 for (const contract of contractsToBind) {
   const id = contractIds[contract.packageName];
-  if (!id) missing.push(`VITE_${contract.envKey}_CONTRACT_ID`);
+  const useWasm = contract.packageName === "battleship" && existsSync(contract.wasmPath);
+  if (!id && !useWasm) missing.push(`VITE_${contract.envKey}_CONTRACT_ID`);
 }
 
 if (missing.length > 0) {
   console.error("❌ Error: Missing contract IDs (need either deployment.json or .env):");
   for (const k of missing) console.error(`  - ${k}`);
+  console.error("\nFor battleship, you can run 'bun run build battleship' first and bindings will be generated from WASM.");
   process.exit(1);
 }
 
 for (const contract of contractsToBind) {
   const contractId = contractIds[contract.packageName];
-  console.log(`Generating bindings for ${contract.packageName}...`);
+  const useWasm = contract.packageName === "battleship" && existsSync(contract.wasmPath);
+  console.log(`Generating bindings for ${contract.packageName}${useWasm ? " (from WASM)" : ""}...`);
   try {
-    await $`stellar contract bindings typescript --contract-id ${contractId} --output-dir ${contract.bindingsOutDir} --network testnet --overwrite`;
+    if (useWasm) {
+      await $`stellar contract bindings typescript --wasm ${contract.wasmPath} --output-dir ${contract.bindingsOutDir} --overwrite`;
+    } else {
+      await $`stellar contract bindings typescript --contract-id ${contractId} --output-dir ${contract.bindingsOutDir} --network testnet --overwrite`;
+    }
     console.log(`✅ ${contract.packageName} bindings generated\n`);
+
+    // Copy battleship bindings into the frontend
+    if (contract.packageName === "battleship") {
+      const frontendBindingsPath = "battleship-frontend/src/games/battleship/bindings.ts";
+      if (existsSync("battleship-frontend")) {
+        const generatedIndex = `${contract.bindingsOutDir}/src/index.ts`;
+        if (existsSync(generatedIndex)) {
+          let content = await Bun.file(generatedIndex).text();
+          const id = contractId || "";
+          if (content.includes("export const networks")) {
+            if (id) content = content.replace(/contractId: "\w+"/, `contractId: "${id}"`);
+          } else {
+            // WASM-generated bindings don't include networks; inject after Buffer check
+            const networksBlock = `\nexport const networks = {\n  testnet: {\n    networkPassphrase: "Test SDF Network ; September 2015",\n    contractId: "${id}"\n  }\n} as const;\n\n`;
+            content = content.replace(/(if \(typeof window !== "undefined"\) \{[^}]+\}\n\n)/, `$1${networksBlock}`);
+          }
+          await Bun.write(frontendBindingsPath, content);
+          console.log(`✅ Copied bindings to ${frontendBindingsPath}\n`);
+        }
+      }
+    }
   } catch (error) {
     console.error(`❌ Failed to generate ${contract.packageName} bindings:`, error);
     process.exit(1);

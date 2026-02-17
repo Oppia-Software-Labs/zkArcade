@@ -13,7 +13,8 @@
     "dev:game": "bun run scripts/dev-game.ts",
     "circuits:build": "bun run scripts/circuits-build.ts",
     "circuits:setup-vkey": "bun run scripts/circuits-setup-vkey.ts",
-    "circuits:vkey-to-soroban": "bun run scripts/circuits-vkey-to-soroban.ts"
+    "circuits:vkey-to-soroban": "bun run scripts/circuits-vkey-to-soroban.ts",
+    "deploy:battleship-chain": "bun run scripts/deploy-battleship-chain.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",
