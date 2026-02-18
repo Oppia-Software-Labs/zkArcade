@@ -30,12 +30,16 @@ if (typeof window !== "undefined") {
   window.Buffer = window.Buffer || Buffer;
 }
 
+
 export const networks = {
   testnet: {
     networkPassphrase: "Test SDF Network ; September 2015",
-    contractId: "CCZU5BW5AMAWP5OFRWANDBIINOZB7IOGGEGNXYBRG6CLPZJQT7MOIOAV",
+    contractId: "CBS5JQVP64FVRPWYF7RLP7MQOMWWSUC3TEHYA45JB7CAKMH67P57WPWB"
   }
 } as const;
+
+
+
 
 export const Errors = {
   1: {message:"GameNotFound"},
@@ -58,7 +62,7 @@ export const Errors = {
   18: {message:"InvalidPublicInputsHash"},
   19: {message:"InvalidProof"},
   20: {message:"TooManyHits"}
-};
+}
 
 
 export interface Game {

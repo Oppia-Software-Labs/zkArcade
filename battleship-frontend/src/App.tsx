@@ -59,7 +59,8 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/" element={<HomePage />} />
+        <Route path="/" element={<Battleship3D />} />
+        <Route path="/play" element={<HomePage />} />
         <Route path="/battleship" element={<Battleship3D />} />
       </Routes>
     </BrowserRouter>

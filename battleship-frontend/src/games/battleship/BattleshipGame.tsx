@@ -1,11 +1,18 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { BattleshipService } from './battleshipService';
 import { requestCache, createCacheKey } from '@/utils/requestCache';
 import { useWallet } from '@/hooks/useWallet';
 import { BATTLESHIP_CONTRACT } from '@/utils/constants';
 import { getFundedSimulationSourceAddress } from '@/utils/simulationUtils';
 import { devWalletService, DevWalletService } from '@/services/devWalletService';
-import type { Game } from './bindings';
+import { computeBoardCommitment, buildResolveShotInput, generateResolveShotProof, type ShipPosition } from './proofService';
+import { canPlaceShip, getShipCells } from '@/game/placement';
+import type { Game, GamePhase } from './bindings';
+import { Buffer } from 'buffer';
+
+const GRID_SIZE = 10;
+/** Order: Carrier, Battleship, Cruiser, Submarine, Destroyer */
+const SHIP_LENGTHS = [5, 4, 3, 3, 2] as const;
 
 const createRandomSessionId = (): number => {
   if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
@@ -48,13 +55,12 @@ export function BattleshipGame({
   const [sessionId, setSessionId] = useState<number>(() => createRandomSessionId());
   const [player1Address, setPlayer1Address] = useState(userAddress);
   const [player1Points, setPlayer1Points] = useState(DEFAULT_POINTS);
-  const [guess, setGuess] = useState<number | null>(null);
   const [gameState, setGameState] = useState<Game | null>(null);
   const [loading, setLoading] = useState(false);
   const [quickstartLoading, setQuickstartLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  const [gamePhase, setGamePhase] = useState<'create' | 'guess' | 'reveal' | 'complete'>('create');
+  const [gamePhase, setGamePhase] = useState<'create' | 'placement' | 'battle' | 'ended'>('create');
   const [createMode, setCreateMode] = useState<'create' | 'import' | 'load'>('create');
   const [exportedAuthEntryXDR, setExportedAuthEntryXDR] = useState<string | null>(null);
   const [importAuthEntryXDR, setImportAuthEntryXDR] = useState('');
@@ -68,6 +74,14 @@ export function BattleshipGame({
   const [xdrParsing, setXdrParsing] = useState(false);
   const [xdrParseError, setXdrParseError] = useState<string | null>(null);
   const [xdrParseSuccess, setXdrParseSuccess] = useState(false);
+  // Placement: 5 ships { x: col, y: row, dir: 0|1 }, then commit
+  const [placementShips, setPlacementShips] = useState<{ x: number; y: number; dir: number }[]>([]);
+  const [placementIndex, setPlacementIndex] = useState(0);
+  const [placementOrientation, setPlacementOrientation] = useState<'horizontal' | 'vertical'>('horizontal');
+  const [mySalt, setMySalt] = useState<string>('');
+  const [myBoardCommitment, setMyBoardCommitment] = useState<Uint8Array | null>(null);
+  /** Cells on my board that were resolved as hit (key "x,y" = col,row). Used for prior_hits and sunk check. */
+  const [resolvedHitsOnMyBoard, setResolvedHitsOnMyBoard] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     setPlayer1Address(userAddress);
@@ -99,6 +113,13 @@ export function BattleshipGame({
     }
   };
 
+  /** Map contract GamePhase to UI phase */
+  const phaseFromGame = (phase: GamePhase): 'placement' | 'battle' | 'ended' => {
+    if (phase.tag === 'WaitingForBoards') return 'placement';
+    if (phase.tag === 'InProgress') return 'battle';
+    return 'ended';
+  };
+
   const handleStartNewGame = () => {
     if (gameState?.winner) {
       onGameComplete();
@@ -108,7 +129,6 @@ export function BattleshipGame({
     setGamePhase('create');
     setSessionId(createRandomSessionId());
     setGameState(null);
-    setGuess(null);
     setLoading(false);
     setQuickstartLoading(false);
     setError(null);
@@ -128,6 +148,7 @@ export function BattleshipGame({
     setXdrParseSuccess(false);
     setPlayer1Address(userAddress);
     setPlayer1Points(DEFAULT_POINTS);
+    resetPlacementState();
   };
 
   const parsePoints = (value: string): bigint | null => {
@@ -145,21 +166,12 @@ export function BattleshipGame({
 
   const loadGameState = async () => {
     try {
-      // Always fetch latest game state to avoid stale cached results after transactions.
       const game = await battleshipService.getGame(sessionId);
       setGameState(game);
-
-      // Determine game phase based on state
-      if (game && game.winner !== null && game.winner !== undefined) {
-        setGamePhase('complete');
-      } else if (game && game.player1_guess !== null && game.player1_guess !== undefined &&
-                 game.player2_guess !== null && game.player2_guess !== undefined) {
-        setGamePhase('reveal');
-      } else {
-        setGamePhase('guess');
+      if (game) {
+        setGamePhase(phaseFromGame(game.phase));
       }
     } catch (err) {
-      // Game doesn't exist yet
       setGameState(null);
     }
   };
@@ -172,9 +184,9 @@ export function BattleshipGame({
     }
   }, [sessionId, gamePhase]);
 
-  // Auto-refresh standings when game completes (for passive player who didn't call reveal_winner)
+  // Auto-refresh standings when game ends
   useEffect(() => {
-    if (gamePhase === 'complete' && gameState?.winner) {
+    if (gamePhase === 'ended' && gameState?.winner) {
       console.log('Game completed! Refreshing standings and dashboard data...');
       onStandingsRefresh(); // Refresh standings and available points; don't call onGameComplete() here or it will close the game!
     }
@@ -200,14 +212,10 @@ export function BattleshipGame({
         battleshipService.getGame(sessionId)
           .then((game) => {
             if (game) {
-              // Game exists! Load it directly instead of going to import mode
-              console.log('[Deep Link] Game already exists, loading directly to guess phase');
-              console.log('[Deep Link] Game data:', game);
-
-              // Auto-load the game - bypass create phase entirely
+              console.log('[Deep Link] Game already exists, loading directly');
               setGameState(game);
-              setGamePhase('guess');
-              setSessionId(sessionId); // Set session ID for the game
+              setGamePhase(phaseFromGame(game.phase));
+              setSessionId(sessionId);
             } else {
               // Game doesn't exist yet, go to import mode
               console.log('[Deep Link] Game not found, entering import mode');
@@ -268,12 +276,10 @@ export function BattleshipGame({
               console.log('[Deep Link] Game already exists (URL), loading directly to guess phase');
               console.log('[Deep Link] Game data:', game);
 
-              // Auto-load the game - bypass create phase entirely
               setGameState(game);
-              setGamePhase('guess');
-              setSessionId(sessionId); // Set session ID for the game
+              setGamePhase(phaseFromGame(game.phase));
+              setSessionId(sessionId);
             } else {
-              // Game doesn't exist yet, go to import mode
               console.log('[Deep Link] Game not found (URL), entering import mode');
               setCreateMode('import');
               setImportAuthEntryXDR(authEntry);
@@ -416,14 +422,12 @@ export function BattleshipGame({
             // Try to load the game
             const game = await battleshipService.getGame(sessionId);
             if (game) {
-              console.log('Game found! Player 2 has finalized the transaction. Transitioning to guess phase...');
+              console.log('Game found! Player 2 has finalized. Transitioning to placement.');
               clearInterval(pollInterval);
-
-              // Update game state
               setGameState(game);
               setExportedAuthEntryXDR(null);
               setSuccess('Game created! Player 2 has signed and submitted.');
-              setGamePhase('guess');
+              setGamePhase(phaseFromGame(game.phase));
 
               // Refresh dashboard to show updated available points (locked in game)
               onStandingsRefresh();
@@ -557,10 +561,12 @@ export function BattleshipGame({
         try {
           const game = await battleshipService.getGame(quickstartSessionId);
           setGameState(game);
+          if (game) setGamePhase(phaseFromGame(game.phase));
+          else setGamePhase('placement');
         } catch (err) {
           console.log('Quickstart game not available yet:', err);
+          setGamePhase('placement');
         }
-        setGamePhase('guess');
         onStandingsRefresh();
         setSuccess('Quickstart complete! Both players signed and the game is ready.');
         setTimeout(() => setSuccess(null), 2000);
@@ -644,7 +650,7 @@ export function BattleshipGame({
         console.log('Transaction submitted successfully! Updating state...');
         setSessionId(gameParams.sessionId);
         setSuccess('Game created successfully! Both players signed.');
-        setGamePhase('guess');
+        setGamePhase('placement');
 
         // Clear import fields
         setImportAuthEntryXDR('');
@@ -713,27 +719,12 @@ export function BattleshipGame({
           throw new Error('You are not a player in this game');
         }
 
-        // Load successful - update session ID and transition to game
         setSessionId(parsedSessionId);
         setGameState(game);
         setLoadSessionId('');
-
-        // Determine game phase based on game state
-        if (game.winner !== null && game.winner !== undefined) {
-          // Game is complete - show reveal phase with winner
-          setGamePhase('reveal');
-          const isWinner = game.winner === userAddress;
-          setSuccess(isWinner ? '🎉 You won this game!' : 'Game complete. Winner revealed.');
-        } else if (game.player1_guess !== null && game.player1_guess !== undefined &&
-            game.player2_guess !== null && game.player2_guess !== undefined) {
-          // Both players guessed, waiting for reveal
-          setGamePhase('reveal');
-          setSuccess('Game loaded! Both players have guessed. You can reveal the winner.');
-        } else {
-          // Still in guessing phase
-          setGamePhase('guess');
-          setSuccess('Game loaded! Make your guess.');
-        }
+        setGamePhase(phaseFromGame(game.phase));
+        const isWinner = game.winner && game.winner !== null && game.winner !== undefined && game.winner === userAddress;
+        setSuccess(game.phase.tag === 'Ended' && isWinner ? '🎉 You won this game!' : 'Game loaded.');
 
         // Clear success message after 2 seconds
         setTimeout(() => setSuccess(null), 2000);
@@ -794,91 +785,199 @@ export function BattleshipGame({
     }
   };
 
-  const handleMakeGuess = async () => {
-    if (guess === null) {
-      setError('Select a number to guess');
-      return;
-    }
-
-    await runAction(async () => {
-      try {
-        setLoading(true);
-        setError(null);
-        setSuccess(null);
-
-        const signer = getContractSigner();
-        await battleshipService.makeGuess(sessionId, userAddress, guess, signer);
-
-        setSuccess(`Guess submitted: ${guess}`);
-        await loadGameState();
-      } catch (err) {
-        console.error('Make guess error:', err);
-        setError(err instanceof Error ? err.message : 'Failed to make guess');
-      } finally {
-        setLoading(false);
-      }
-    });
-  };
-
-  const waitForWinner = async () => {
-    let updatedGame = await battleshipService.getGame(sessionId);
-    let attempts = 0;
-    while (attempts < 5 && (!updatedGame || updatedGame.winner === null || updatedGame.winner === undefined)) {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      updatedGame = await battleshipService.getGame(sessionId);
-      attempts += 1;
-    }
-    return updatedGame;
-  };
-
-  const handleRevealWinner = async () => {
-    await runAction(async () => {
-      try {
-        setLoading(true);
-        setError(null);
-        setSuccess(null);
-
-        const signer = getContractSigner();
-        await battleshipService.revealWinner(sessionId, userAddress, signer);
-
-        // Fetch updated on-chain state and derive the winner from it (avoid type mismatches from tx result decoding).
-        const updatedGame = await waitForWinner();
-        setGameState(updatedGame);
-        setGamePhase('complete');
-
-        const isWinner = updatedGame?.winner === userAddress;
-        setSuccess(isWinner ? '🎉 You won!' : 'Game complete! Winner revealed.');
-
-        // Refresh standings immediately (without navigating away)
-        onStandingsRefresh();
-
-        // DON'T call onGameComplete() immediately - let user see the results
-        // User can click "Start New Game" when ready
-      } catch (err) {
-        console.error('Reveal winner error:', err);
-        setError(err instanceof Error ? err.message : 'Failed to reveal winner');
-      } finally {
-        setLoading(false);
-      }
-    });
-  };
-
   const isPlayer1 = gameState && gameState.player1 === userAddress;
   const isPlayer2 = gameState && gameState.player2 === userAddress;
-  const hasGuessed = isPlayer1 ? gameState?.player1_guess !== null && gameState?.player1_guess !== undefined :
-                     isPlayer2 ? gameState?.player2_guess !== null && gameState?.player2_guess !== undefined : false;
+  const isMyTurn = gameState?.turn && gameState.turn !== null && gameState.turn !== undefined && gameState.turn === userAddress;
+  const hasPendingShot =
+    gameState?.pending_shot_shooter != null &&
+    gameState?.pending_shot_shooter !== undefined &&
+    gameState?.pending_shot_shooter !== '';
+  const iAmDefender = hasPendingShot && gameState?.pending_shot_shooter !== userAddress;
+  const iAmShooter = hasPendingShot && gameState?.pending_shot_shooter === userAddress;
 
-  const winningNumber = gameState?.winning_number;
-  const player1Guess = gameState?.player1_guess;
-  const player2Guess = gameState?.player2_guess;
-  const player1Distance =
-    winningNumber !== null && winningNumber !== undefined && player1Guess !== null && player1Guess !== undefined
-      ? Math.abs(Number(player1Guess) - Number(winningNumber))
-      : null;
-  const player2Distance =
-    winningNumber !== null && winningNumber !== undefined && player2Guess !== null && player2Guess !== undefined
-      ? Math.abs(Number(player2Guess) - Number(winningNumber))
-      : null;
+  const haveICommittedBoard = useMemo(() => {
+    if (!gameState) return false;
+    if (isPlayer1 && gameState.board_commitment_p1 != null && gameState.board_commitment_p1 !== undefined) return true;
+    if (isPlayer2 && gameState.board_commitment_p2 != null && gameState.board_commitment_p2 !== undefined) return true;
+    return false;
+  }, [gameState, isPlayer1, isPlayer2]);
+
+  const placementGrid = useMemo(() => {
+    const grid: boolean[][] = Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill(false));
+    for (let i = 0; i < placementShips.length; i++) {
+      const { x: col, y: row, dir } = placementShips[i];
+      const orientation = dir === 1 ? 'horizontal' : 'vertical';
+      const cells = getShipCells(row, col, SHIP_LENGTHS[i], orientation);
+      for (const c of cells) grid[c.row][c.col] = true;
+    }
+    return grid;
+  }, [placementShips]);
+
+  const handlePlacementCellClick = (row: number, col: number) => {
+    if (placementIndex >= 5) return;
+    const length = SHIP_LENGTHS[placementIndex];
+    const orientation = placementOrientation;
+    const gridForCheck = placementGrid.map((r) => r.map((hasShip) => ({ hasShip })));
+    if (!canPlaceShip(gridForCheck, row, col, length, orientation)) return;
+    const dir = orientation === 'horizontal' ? 1 : 0;
+    setPlacementShips((prev) => [...prev, { x: col, y: row, dir }]);
+    setPlacementIndex((prev) => prev + 1);
+  };
+
+  const handleCommitBoard = async () => {
+    if (placementShips.length !== 5) return;
+    await runAction(async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        setSuccess(null);
+        const salt = mySalt.trim() ? BigInt(mySalt) : BigInt('0x' + Array.from(crypto.getRandomValues(new Uint8Array(16))).map((b) => b.toString(16).padStart(2, '0')).join(''));
+        const shipPositions: ShipPosition = {
+          ship_x: placementShips.map((s) => s.x),
+          ship_y: placementShips.map((s) => s.y),
+          ship_dir: placementShips.map((s) => s.dir),
+        };
+        const commitment = await computeBoardCommitment(shipPositions, salt);
+        const signer = getContractSigner();
+        await battleshipService.commitBoard(sessionId, userAddress, Buffer.from(commitment), signer);
+        setMyBoardCommitment(commitment);
+        setMySalt(salt.toString());
+        setSuccess('Board committed on-chain.');
+        await loadGameState();
+        setTimeout(() => setSuccess(null), 3000);
+      } catch (err) {
+        console.error('Commit board error:', err);
+        setError(err instanceof Error ? err.message : 'Failed to commit board');
+      } finally {
+        setLoading(false);
+      }
+    });
+  };
+
+  const resetPlacementState = () => {
+    setPlacementShips([]);
+    setPlacementIndex(0);
+    setPlacementOrientation('horizontal');
+    setMySalt('');
+    setMyBoardCommitment(null);
+    setResolvedHitsOnMyBoard(new Set());
+  };
+
+  /** 17 board cells in circuit layout order (Carrier, Battleship, Cruiser, Submarine, Destroyer). Each { x: col, y: row }. */
+  const boardLayoutCells = useMemo(() => {
+    const out: { x: number; y: number }[] = [];
+    for (let s = 0; s < 5; s++) {
+      const len = SHIP_LENGTHS[s];
+      const col = placementShips[s]?.x ?? 0;
+      const row = placementShips[s]?.y ?? 0;
+      const dir = placementShips[s]?.dir ?? 0;
+      for (let k = 0; k < len; k++) {
+        out.push({
+          x: col + (dir === 1 ? k : 0),
+          y: row + (dir === 0 ? k : 0),
+        });
+      }
+    }
+    return out.length === 17 ? out : [];
+  }, [placementShips]);
+
+  const handleFire = async (x: number, y: number) => {
+    await runAction(async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        setSuccess(null);
+        const signer = getContractSigner();
+        await battleshipService.fire(sessionId, userAddress, x, y, signer);
+        setSuccess(`Shot at (${x}, ${y}) submitted. Waiting for defender to resolve.`);
+        await loadGameState();
+        setTimeout(() => setSuccess(null), 3000);
+      } catch (err) {
+        console.error('Fire error:', err);
+        setError(err instanceof Error ? err.message : 'Failed to fire');
+      } finally {
+        setLoading(false);
+      }
+    });
+  };
+
+  const handleResolveShot = async () => {
+    if (!gameState || placementShips.length !== 5 || !myBoardCommitment || boardLayoutCells.length !== 17) return;
+    const shotX = gameState.pending_shot_x;
+    const shotY = gameState.pending_shot_y;
+    const shooter = gameState.pending_shot_shooter;
+    if (shooter == null || shooter === undefined || shooter === '') return;
+
+    const hitCellIndex = boardLayoutCells.findIndex((c) => c.x === shotX && c.y === shotY);
+    const isHit = hitCellIndex >= 0;
+    let sunkShip = 0;
+    if (isHit) {
+      const shipIndex = hitCellIndex < 5 ? 0 : hitCellIndex < 9 ? 1 : hitCellIndex < 12 ? 2 : hitCellIndex < 15 ? 3 : 4;
+      const shipStart = [0, 5, 9, 12, 15][shipIndex];
+      const shipLen = SHIP_LENGTHS[shipIndex];
+      const shipCells = boardLayoutCells.slice(shipStart, shipStart + shipLen);
+      const hitsIncludingThis = new Set(resolvedHitsOnMyBoard);
+      hitsIncludingThis.add(`${shotX},${shotY}`);
+      const allHit = shipCells.every((c) => hitsIncludingThis.has(`${c.x},${c.y}`));
+      if (allHit) sunkShip = shipIndex + 1;
+    }
+
+    await runAction(async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        setSuccess(null);
+        const priorHits = boardLayoutCells.map((c) => (resolvedHitsOnMyBoard.has(`${c.x},${c.y}`) ? 1 : 0));
+        const publicInputsHash = await battleshipService.buildPublicInputsHash(
+          sessionId,
+          userAddress,
+          shooter,
+          shotX,
+          shotY,
+          isHit,
+          sunkShip,
+          Buffer.from(myBoardCommitment)
+        );
+        const shipPositions: ShipPosition = {
+          ship_x: placementShips.map((s) => s.x),
+          ship_y: placementShips.map((s) => s.y),
+          ship_dir: placementShips.map((s) => s.dir),
+        };
+        const witnessInput = buildResolveShotInput(
+          shipPositions,
+          mySalt || '0',
+          priorHits,
+          shotX,
+          shotY,
+          isHit ? 1 : 0,
+          sunkShip,
+          myBoardCommitment,
+          new Uint8Array(publicInputsHash)
+        );
+        const proofPayload = await generateResolveShotProof(witnessInput);
+        const signer = getContractSigner();
+        const result = await battleshipService.resolveShot(
+          sessionId,
+          userAddress,
+          isHit,
+          sunkShip,
+          Buffer.from(proofPayload),
+          publicInputsHash,
+          signer
+        );
+        if (isHit) setResolvedHitsOnMyBoard((prev) => new Set(prev).add(`${shotX},${shotY}`));
+        setSuccess(result.winner != null && result.winner !== undefined && result.winner !== '' ? 'Game over!' : isHit ? (sunkShip ? `Hit! Ship sunk.` : 'Hit!') : 'Miss.');
+        await loadGameState();
+        if (result.winner != null && result.winner !== undefined && result.winner !== '') onStandingsRefresh();
+        setTimeout(() => setSuccess(null), 3000);
+      } catch (err) {
+        console.error('Resolve shot error:', err);
+        setError(err instanceof Error ? err.message : 'Failed to resolve shot');
+      } finally {
+        setLoading(false);
+      }
+    });
+  };
 
   return (
     <div className="bg-white/70 backdrop-blur-xl rounded-2xl p-8 shadow-xl border-2 border-purple-200">
@@ -888,7 +987,7 @@ export function BattleshipGame({
             Battleship Game 🎲
           </h2>
           <p className="text-sm text-gray-700 font-semibold mt-1">
-            Guess a number 1-10. Closest guess wins!
+            Place ships, commit your board, then take turns firing. ZK proofs resolve hits.
           </p>
           <p className="text-xs text-gray-500 font-mono mt-1">
             Session ID: {sessionId}
@@ -1235,166 +1334,191 @@ export function BattleshipGame({
         </div>
       )}
 
-      {/* GUESS PHASE */}
-      {gamePhase === 'guess' && gameState && (
+      {/* PLACEMENT PHASE — place ships then commit via proof service */}
+      {gamePhase === 'placement' && gameState && (
         <div className="space-y-6">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className={`p-5 rounded-xl border-2 ${isPlayer1 ? 'border-purple-400 bg-gradient-to-br from-purple-50 to-pink-50 shadow-lg' : 'border-gray-200 bg-white'}`}>
-              <div className="text-xs font-bold uppercase tracking-wide text-gray-600 mb-1">Player 1</div>
-              <div className="font-mono text-sm font-semibold mb-2 text-gray-800">
-                {gameState.player1.slice(0, 8)}...{gameState.player1.slice(-4)}
-              </div>
-              <div className="text-xs font-semibold text-gray-600">
-                Points: {(Number(gameState.player1_points) / 10000000).toFixed(2)}
-              </div>
-              <div className="mt-3">
-                {gameState.player1_guess !== null && gameState.player1_guess !== undefined ? (
-                  <div className="inline-block px-3 py-1 rounded-full bg-gradient-to-r from-green-400 to-emerald-500 text-white text-xs font-bold shadow-md">
-                    ✓ Guessed
-                  </div>
-                ) : (
-                  <div className="inline-block px-3 py-1 rounded-full bg-gray-200 text-gray-600 text-xs font-bold">
-                    Waiting...
-                  </div>
-                )}
+            <div className={`p-5 rounded-xl border-2 ${isPlayer1 ? 'border-purple-400 bg-purple-50' : 'border-gray-200 bg-white'}`}>
+              <div className="text-xs font-bold uppercase text-gray-600 mb-1">Player 1</div>
+              <div className="font-mono text-sm text-gray-800">{gameState.player1.slice(0, 8)}...{gameState.player1.slice(-4)}</div>
+              <div className="mt-2 text-xs text-gray-600">
+                Board: {gameState.board_commitment_p1 != null && gameState.board_commitment_p1 !== undefined ? '✓ Committed' : 'Waiting...'}
               </div>
             </div>
-
-            <div className={`p-5 rounded-xl border-2 ${isPlayer2 ? 'border-purple-400 bg-gradient-to-br from-purple-50 to-pink-50 shadow-lg' : 'border-gray-200 bg-white'}`}>
-              <div className="text-xs font-bold uppercase tracking-wide text-gray-600 mb-1">Player 2</div>
-              <div className="font-mono text-sm font-semibold mb-2 text-gray-800">
-                {gameState.player2.slice(0, 8)}...{gameState.player2.slice(-4)}
-              </div>
-              <div className="text-xs font-semibold text-gray-600">
-                Points: {(Number(gameState.player2_points) / 10000000).toFixed(2)}
-              </div>
-              <div className="mt-3">
-                {gameState.player2_guess !== null && gameState.player2_guess !== undefined ? (
-                  <div className="inline-block px-3 py-1 rounded-full bg-gradient-to-r from-green-400 to-emerald-500 text-white text-xs font-bold shadow-md">
-                    ✓ Guessed
-                  </div>
-                ) : (
-                  <div className="inline-block px-3 py-1 rounded-full bg-gray-200 text-gray-600 text-xs font-bold">
-                    Waiting...
-                  </div>
-                )}
+            <div className={`p-5 rounded-xl border-2 ${isPlayer2 ? 'border-purple-400 bg-purple-50' : 'border-gray-200 bg-white'}`}>
+              <div className="text-xs font-bold uppercase text-gray-600 mb-1">Player 2</div>
+              <div className="font-mono text-sm text-gray-800">{gameState.player2.slice(0, 8)}...{gameState.player2.slice(-4)}</div>
+              <div className="mt-2 text-xs text-gray-600">
+                Board: {gameState.board_commitment_p2 != null && gameState.board_commitment_p2 !== undefined ? '✓ Committed' : 'Waiting...'}
               </div>
             </div>
           </div>
 
-          {(isPlayer1 || isPlayer2) && !hasGuessed && (
+          {(isPlayer1 || isPlayer2) && !haveICommittedBoard && (
             <div className="space-y-4">
-              <label className="block text-sm font-bold text-gray-700">
-                Make Your Guess (1-10)
-              </label>
-              <div className="grid grid-cols-3 sm:grid-cols-5 gap-3">
-                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => (
-                  <button
-                    key={num}
-                    onClick={() => setGuess(num)}
-                    className={`p-4 rounded-xl border-2 font-black text-xl transition-all ${
-                      guess === num
-                        ? 'border-purple-500 bg-gradient-to-br from-purple-500 to-pink-500 text-white scale-110 shadow-2xl'
-                        : 'border-gray-200 bg-white hover:border-purple-300 hover:shadow-lg hover:scale-105'
-                    }`}
-                  >
-                    {num}
-                  </button>
-                ))}
-              </div>
-              <button
-                onClick={handleMakeGuess}
-                disabled={isBusy || guess === null}
-                className="w-full mt-2.5 py-4 rounded-xl font-bold text-white text-lg bg-gradient-to-r from-purple-500 via-pink-500 to-red-500 hover:from-purple-600 hover:via-pink-600 hover:to-red-600 disabled:from-gray-200 disabled:to-gray-300 disabled:text-gray-500 transition-all shadow-xl hover:shadow-2xl transform hover:scale-105 disabled:transform-none"
-              >
-                {loading ? 'Submitting...' : 'Submit Guess'}
-              </button>
-            </div>
-          )}
-
-          {hasGuessed && (
-            <div className="p-4 bg-gradient-to-r from-blue-50 to-cyan-50 border-2 border-blue-200 rounded-xl">
-              <p className="text-sm font-semibold text-blue-700">
-                ✓ You've made your guess. Waiting for other player...
+              <p className="text-sm font-semibold text-gray-700">
+                Place your 5 ships (click a cell to set the bow). Order: Carrier (5), Battleship (4), Cruiser (3), Submarine (3), Destroyer (2).
               </p>
+              <div className="flex items-center gap-4">
+                <span className="text-xs font-bold text-gray-600">Orientation:</span>
+                <button
+                  type="button"
+                  onClick={() => setPlacementOrientation((o) => (o === 'horizontal' ? 'vertical' : 'horizontal'))}
+                  className="px-3 py-1.5 rounded-lg border-2 border-purple-300 bg-white font-medium text-sm text-purple-700 hover:bg-purple-50"
+                >
+                  {placementOrientation === 'horizontal' ? 'Horizontal' : 'Vertical'}
+                </button>
+                <span className="text-xs text-gray-500">
+                  Ship {placementIndex + 1}/5 — length {placementIndex < 5 ? SHIP_LENGTHS[placementIndex] : ''}
+                </span>
+              </div>
+              <div className="inline-block border-2 border-gray-300 rounded-lg p-1 bg-gray-50">
+                <div className="grid gap-0.5" style={{ gridTemplateColumns: `repeat(${GRID_SIZE}, 1.75rem)` }}>
+                  {Array.from({ length: GRID_SIZE }, (_, row) =>
+                    Array.from({ length: GRID_SIZE }, (_, col) => (
+                      <button
+                        key={`${row}-${col}`}
+                        type="button"
+                        disabled={placementIndex >= 5}
+                        onClick={() => handlePlacementCellClick(row, col)}
+                        className={`w-7 h-7 rounded border text-xs font-mono flex items-center justify-center transition-colors ${
+                          placementGrid[row][col]
+                            ? 'bg-purple-500 border-purple-600 text-white'
+                            : 'bg-white border-gray-300 hover:border-purple-400 hover:bg-purple-50 disabled:opacity-50'
+                        }`}
+                      >
+                        {placementGrid[row][col] ? '■' : ''}
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+              {placementIndex < 5 && (
+                <button
+                  type="button"
+                  onClick={resetPlacementState}
+                  className="text-xs text-gray-500 underline hover:text-gray-700"
+                >
+                  Reset placement
+                </button>
+              )}
+              {placementShips.length === 5 && (
+                <div className="flex flex-col gap-2">
+                  <label className="text-xs font-bold text-gray-600">Salt (optional, random if empty)</label>
+                  <input
+                    type="text"
+                    value={mySalt}
+                    onChange={(e) => setMySalt(e.target.value)}
+                    placeholder="Leave empty for random"
+                    className="w-full max-w-xs px-3 py-2 rounded-lg border-2 border-gray-200 text-sm font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleCommitBoard}
+                    disabled={isBusy}
+                    className="w-full max-w-xs py-3 rounded-xl font-bold text-white bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 disabled:opacity-50"
+                  >
+                    {loading ? 'Committing...' : 'Commit board (on-chain)'}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {haveICommittedBoard && (
+            <div className="p-4 bg-green-50 border-2 border-green-200 rounded-xl">
+              <p className="text-sm font-semibold text-green-800">✓ You have committed your board. Waiting for the other player…</p>
             </div>
           )}
         </div>
       )}
 
-      {/* REVEAL PHASE */}
-      {gamePhase === 'reveal' && gameState && (
+      {/* BATTLE PHASE — fire (shooter) and resolve_shot (defender with proof) */}
+      {gamePhase === 'battle' && gameState && (
         <div className="space-y-6">
-          <div className="p-8 bg-gradient-to-br from-yellow-50 via-orange-50 to-amber-50 border-2 border-yellow-300 rounded-2xl text-center shadow-xl">
-            <div className="text-6xl mb-4">🎊</div>
-            <h3 className="text-2xl font-black text-gray-900 mb-3">
-              Both Players Have Guessed!
-            </h3>
-            <p className="text-sm font-semibold text-gray-700 mb-6">
-              Click below to reveal the winner
-            </p>
-            <button
-              onClick={handleRevealWinner}
-              disabled={isBusy}
-              className="px-10 py-4 rounded-xl font-bold text-white text-lg bg-gradient-to-r from-yellow-500 via-orange-500 to-amber-500 hover:from-yellow-600 hover:via-orange-600 hover:to-amber-600 disabled:from-gray-200 disabled:to-gray-300 disabled:text-gray-500 transition-all shadow-xl hover:shadow-2xl transform hover:scale-105 disabled:transform-none"
-            >
-              {loading ? 'Revealing...' : 'Reveal Winner'}
-            </button>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className={`p-5 rounded-xl border-2 ${isPlayer1 ? 'border-purple-400 bg-purple-50' : 'border-gray-200 bg-white'}`}>
+              <div className="text-xs font-bold uppercase text-gray-600 mb-1">Player 1</div>
+              <div className="font-mono text-sm text-gray-800">{gameState.player1.slice(0, 8)}...{gameState.player1.slice(-4)}</div>
+              <div className="text-xs text-gray-600 mt-1">Hits: {gameState.hits_on_p1} · Sunk: {gameState.sunk_ships_on_p1}</div>
+            </div>
+            <div className={`p-5 rounded-xl border-2 ${isPlayer2 ? 'border-purple-400 bg-purple-50' : 'border-gray-200 bg-white'}`}>
+              <div className="text-xs font-bold uppercase text-gray-600 mb-1">Player 2</div>
+              <div className="font-mono text-sm text-gray-800">{gameState.player2.slice(0, 8)}...{gameState.player2.slice(-4)}</div>
+              <div className="text-xs text-gray-600 mt-1">Hits: {gameState.hits_on_p2} · Sunk: {gameState.sunk_ships_on_p2}</div>
+            </div>
           </div>
+
+          {hasPendingShot && (
+            <div className="p-4 bg-amber-50 border-2 border-amber-200 rounded-xl space-y-3">
+              <p className="text-sm font-semibold text-amber-800">
+                Pending shot at ({gameState.pending_shot_x}, {gameState.pending_shot_y}). {iAmDefender ? 'You are the defender — resolve with a ZK proof.' : 'Waiting for defender to resolve.'}
+              </p>
+              {iAmDefender && (
+                <button
+                  type="button"
+                  onClick={handleResolveShot}
+                  disabled={isBusy || placementShips.length !== 5 || !myBoardCommitment}
+                  className="py-3 px-4 rounded-xl font-bold text-white bg-amber-500 hover:bg-amber-600 disabled:opacity-50"
+                >
+                  {loading ? 'Generating proof...' : 'Resolve shot (generate proof & submit)'}
+                </button>
+              )}
+            </div>
+          )}
+
+          {!hasPendingShot && (isPlayer1 || isPlayer2) && isMyTurn && (
+            <div className="space-y-3">
+              <p className="text-sm font-semibold text-gray-700">Your turn — pick a cell to fire at (opponent&apos;s board):</p>
+              <div className="inline-block border-2 border-gray-300 rounded-lg p-1 bg-gray-50">
+                <div className="grid gap-0.5" style={{ gridTemplateColumns: `repeat(${GRID_SIZE}, 1.75rem)` }}>
+                  {Array.from({ length: GRID_SIZE }, (_, row) =>
+                    Array.from({ length: GRID_SIZE }, (_, col) => (
+                      <button
+                        key={`fire-${row}-${col}`}
+                        type="button"
+                        disabled={isBusy}
+                        onClick={() => handleFire(col, row)}
+                        className="w-7 h-7 rounded border border-gray-300 bg-white hover:border-red-400 hover:bg-red-50 text-xs font-mono flex items-center justify-center disabled:opacity-50"
+                      >
+                        {col},{row}
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {!hasPendingShot && !isMyTurn && (isPlayer1 || isPlayer2) && (
+            <p className="text-sm text-gray-600">Opponent&apos;s turn — wait for them to fire.</p>
+          )}
         </div>
       )}
 
-      {/* COMPLETE PHASE */}
-      {gamePhase === 'complete' && gameState && (
+      {/* ENDED PHASE */}
+      {gamePhase === 'ended' && gameState && (
         <div className="space-y-6">
           <div className="p-10 bg-gradient-to-br from-green-50 via-emerald-50 to-teal-50 border-2 border-green-300 rounded-2xl text-center shadow-2xl">
             <div className="text-7xl mb-6">🏆</div>
-            <h3 className="text-3xl font-black text-gray-900 mb-4">
-              Game Complete!
-            </h3>
-            <div className="text-2xl font-black text-green-700 mb-6">
-              Winning Number: {gameState.winning_number}
-            </div>
-            <div className="space-y-3 mb-6">
-              <div className="p-4 bg-white/70 border border-green-200 rounded-xl">
-                <p className="text-xs font-bold uppercase tracking-wide text-gray-600 mb-1">Player 1</p>
-                <p className="font-mono text-xs text-gray-700 mb-2">
-                  {gameState.player1.slice(0, 8)}...{gameState.player1.slice(-4)}
-                </p>
-                <p className="text-sm font-semibold text-gray-800">
-                  Guess: {gameState.player1_guess ?? '—'}
-                  {player1Distance !== null ? ` (distance ${player1Distance})` : ''}
-                </p>
-              </div>
-
-              <div className="p-4 bg-white/70 border border-green-200 rounded-xl">
-                <p className="text-xs font-bold uppercase tracking-wide text-gray-600 mb-1">Player 2</p>
-                <p className="font-mono text-xs text-gray-700 mb-2">
-                  {gameState.player2.slice(0, 8)}...{gameState.player2.slice(-4)}
-                </p>
-                <p className="text-sm font-semibold text-gray-800">
-                  Guess: {gameState.player2_guess ?? '—'}
-                  {player2Distance !== null ? ` (distance ${player2Distance})` : ''}
-                </p>
-              </div>
-            </div>
-            {gameState.winner && (
-              <div className="mt-6 p-5 bg-white border-2 border-green-200 rounded-xl shadow-lg">
-                <p className="text-xs font-bold uppercase tracking-wide text-gray-600 mb-2">Winner</p>
-                <p className="font-mono text-sm font-bold text-gray-800">
-                  {gameState.winner.slice(0, 8)}...{gameState.winner.slice(-4)}
+            <h3 className="text-3xl font-black text-gray-900 mb-4">Game Over</h3>
+            {gameState.winner != null && gameState.winner !== undefined && gameState.winner !== '' ? (
+              <>
+                <p className="text-sm text-gray-600 mb-2">Winner</p>
+                <p className="font-mono text-lg font-bold text-gray-800 mb-4">
+                  {gameState.winner.slice(0, 12)}...{gameState.winner.slice(-4)}
                 </p>
                 {gameState.winner === userAddress && (
-                  <p className="mt-3 text-green-700 font-black text-lg">
-                    🎉 You won!
-                  </p>
+                  <p className="text-green-700 font-black text-xl">🎉 You won!</p>
                 )}
-              </div>
+              </>
+            ) : (
+              <p className="text-gray-600">Game ended.</p>
             )}
           </div>
           <button
             onClick={handleStartNewGame}
-            className="w-full py-4 rounded-xl font-bold text-gray-700 bg-gradient-to-r from-gray-200 to-gray-300 hover:from-gray-300 hover:to-gray-400 transition-all shadow-lg hover:shadow-xl transform hover:scale-105"
+            className="w-full py-4 rounded-xl font-bold text-gray-700 bg-gradient-to-r from-gray-200 to-gray-300 hover:from-gray-300 hover:to-gray-400 transition-all shadow-lg hover:shadow-xl"
           >
             Start New Game
           </button>

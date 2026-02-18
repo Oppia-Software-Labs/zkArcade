@@ -26,7 +26,7 @@ export function Battleship3D() {
     <div style={{ position: 'fixed', inset: 0, width: '100%', height: '100%' }}>
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
       <Link
-        to="/"
+        to="/play"
         style={{
           position: 'absolute',
           top: 16,
@@ -41,7 +41,7 @@ export function Battleship3D() {
           zIndex: 10
         }}
       >
-        Back
+        2D Game
       </Link>
       <div
         style={{
