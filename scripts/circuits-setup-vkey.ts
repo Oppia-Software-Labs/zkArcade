@@ -25,8 +25,8 @@
  */
 
 import { $ } from "bun";
-import { existsSync } from "fs";
-import { join } from "path";
+import { existsSync, statSync } from "fs";
+import { join, resolve } from "path";
 
 const ROOT = import.meta.dir + "/..";
 const BUILD_DIR = join(ROOT, "circuits", "build");
@@ -79,11 +79,32 @@ async function main() {
     process.exit(1);
   }
 
+  const ptauPath = resolve(ptau);
+  const ptauStat = statSync(ptauPath);
+  if (ptauStat.size === 0) {
+    console.error(`Error: ptau file is empty: ${ptauPath}`);
+    console.error("Download a valid ptau (e.g. from Hermez Phase 1) or generate with: npx snarkjs ptn bn128 <power> ptau.ptau");
+    process.exit(1);
+  }
+
   console.log("Groth16 setup for resolve_shot...\n");
 
   // 1) groth16 setup: circuit.r1cs + ptau -> circuit_0000.zkey
   console.log("Running snarkjs groth16 setup...");
-  await $`npx snarkjs g16s ${R1CS} ${ptau} ${ZKEY_INITIAL}`.quiet();
+  await $`npx snarkjs g16s ${R1CS} ${ptauPath} ${ZKEY_INITIAL}`;
+  if (!existsSync(ZKEY_INITIAL)) {
+    console.error("Error: snarkjs did not create the zkey file. Check the output above for errors.");
+    process.exit(1);
+  }
+  const zkeySize = statSync(ZKEY_INITIAL).size;
+  if (zkeySize === 0) {
+    console.error("Error: zkey file is empty. If snarkjs said 'Powers of tau is not prepared':");
+    console.error("  Your ptau must be phase-2 prepared. Use a Hermez *_final_*.ptau, or run:");
+    console.error("  npx snarkjs pt2 <your.ptau> ptau_final.ptau -v");
+    console.error("  See circuits/README.md (Powers-of-tau) for the full workflow.");
+    console.error("Other causes: ptau too small for circuit, wrong curve, or corrupt file.");
+    process.exit(1);
+  }
   console.log("Wrote", ZKEY_INITIAL);
 
   let zkeyForVkey = ZKEY_INITIAL;

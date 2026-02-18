@@ -56,12 +56,16 @@ The Groth16 trusted setup requires a **powers-of-tau** file whose size is at lea
    ```
    Use a ptau with power ≥ log₂(constraints) (e.g. if you have ~2^10 constraints, use at least 2^10).
 
-2. **Obtain a ptau file:**
-   - Download from the [Hermez Phase 1](https://github.com/hermeznetwork/phase2ceremony) ceremony (e.g. `powersOfTau28_hez_final_12.ptau` for 2^12).
-   - Or generate one (smaller, for testing):
+2. **Obtain a ptau file (must be “phase 2 prepared”):**
+   - **Recommended:** Download a **prepared** file from the [Hermez Phase 1](https://github.com/hermeznetwork/phase2ceremony) ceremony. Use the `*_final_*` files (e.g. [powersOfTau28_hez_final_12.ptau](https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_12.ptau) for 2^12). These are already prepared and work with `g16s`.
+   - **Or generate one locally** (for testing). A raw ptau from `ptn` is **not** enough; you must contribute then **prepare phase 2**:
      ```bash
-     npx snarkjs ptn bn128 12 ptau.ptau
+     npx snarkjs ptn bn128 12 ptau_0000.ptau
+     npx snarkjs ptc ptau_0000.ptau ptau_0001.ptau --name="First" -v
+     npx snarkjs pt2 ptau_0001.ptau ptau_final.ptau -v
      ```
+     Then use `ptau_final.ptau` (not `ptau_0000.ptau` or `ptau_0001.ptau`) with `circuits:setup-vkey`.  
+     If you skip `pt2`, you will get: **"Powers of tau is not prepared."**
 
 ---
 
