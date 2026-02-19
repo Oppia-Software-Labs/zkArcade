@@ -60,7 +60,6 @@ export default async function buildBoardCommitWitnessCalculator(code, options = 
   }
 
   const sanityCheck = options.sanityCheck ?? false;
-  return new WitnessCalculator(instance, sanityCheck);
 
   function toArray32(rem, size) {
     const res = [];
@@ -207,4 +206,6 @@ export default async function buildBoardCommitWitnessCalculator(code, options = 
       return w;
     }
   }
+
+  return new WitnessCalculator(instance, sanityCheck);
 }

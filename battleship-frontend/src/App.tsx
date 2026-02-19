@@ -4,6 +4,7 @@ import { Layout } from './components/Layout';
 import { useWallet } from './hooks/useWallet';
 import { BattleshipGame } from './games/battleship/BattleshipGame';
 import { Battleship3D } from './components/Battleship3D';
+import { Battleship3DWithContract } from './components/Battleship3DWithContract';
 
 const GAME_ID = 'battleship';
 const GAME_TITLE = import.meta.env.VITE_GAME_TITLE || 'Battleship';
@@ -61,6 +62,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Battleship3D />} />
         <Route path="/play" element={<HomePage />} />
+        <Route path="/play3d" element={<Battleship3DWithContract />} />
         <Route path="/battleship" element={<Battleship3D />} />
       </Routes>
     </BrowserRouter>

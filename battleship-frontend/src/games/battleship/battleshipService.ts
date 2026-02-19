@@ -704,10 +704,11 @@ export class BattleshipService {
       board_commitment: boardCommitment,
     }, DEFAULT_METHOD_OPTIONS);
     const result = await tx.simulate();
-    if (!result.result.isOk()) {
+    const res = result.result as unknown as { isOk(): boolean; unwrap(): Uint8Array };
+    if (!res.isOk()) {
       throw new Error('build_public_inputs_hash simulation failed');
     }
-    return Buffer.from(result.result.unwrap());
+    return Buffer.from(res.unwrap());
   }
 
   /**

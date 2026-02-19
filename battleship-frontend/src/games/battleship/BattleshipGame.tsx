@@ -82,6 +82,10 @@ export function BattleshipGame({
   const [myBoardCommitment, setMyBoardCommitment] = useState<Uint8Array | null>(null);
   /** Cells on my board that were resolved as hit (key "x,y" = col,row). Used for prior_hits and sunk check. */
   const [resolvedHitsOnMyBoard, setResolvedHitsOnMyBoard] = useState<Set<string>>(new Set());
+  /** Pending shot we submitted (as shooter) so we can match last_resolved_* on poll. */
+  const [myPendingShot, setMyPendingShot] = useState<{ x: number; y: number } | null>(null);
+  /** My shots on opponent's board: key "x,y" -> { hit, sunkShip }. Filled from last_resolved_* when we're the shooter. */
+  const [myShotsOnOpponent, setMyShotsOnOpponent] = useState<Record<string, { hit: boolean; sunkShip: number }>>({});
 
   useEffect(() => {
     setPlayer1Address(userAddress);
@@ -175,6 +179,25 @@ export function BattleshipGame({
       setGameState(null);
     }
   };
+
+  // Apply last_resolved_* for shooter: when we poll and our shot was resolved (no pending), update my shots on opponent
+  useEffect(() => {
+    if (!gameState || !userAddress) return;
+    const pendingNow = gameState.pending_shot_shooter;
+    const noPending = pendingNow == null || pendingNow === undefined || pendingNow === '';
+    if (!noPending) return;
+    const lr = gameState.last_resolved_shooter;
+    const isMe = lr != null && lr !== undefined && lr !== '' && lr === userAddress;
+    if (!isMe) return;
+    const px = gameState.last_resolved_x;
+    const py = gameState.last_resolved_y;
+    const key = `${px},${py}`;
+    setMyShotsOnOpponent((prev) => {
+      if (prev[key] !== undefined) return prev;
+      return { ...prev, [key]: { hit: gameState.last_resolved_is_hit, sunkShip: gameState.last_resolved_sunk_ship } };
+    });
+    if (myPendingShot && myPendingShot.x === px && myPendingShot.y === py) setMyPendingShot(null);
+  }, [gameState, userAddress, myPendingShot]);
 
   useEffect(() => {
     if (gamePhase !== 'create') {
@@ -861,6 +884,8 @@ export function BattleshipGame({
     setMySalt('');
     setMyBoardCommitment(null);
     setResolvedHitsOnMyBoard(new Set());
+    setMyPendingShot(null);
+    setMyShotsOnOpponent({});
   };
 
   /** 17 board cells in circuit layout order (Carrier, Battleship, Cruiser, Submarine, Destroyer). Each { x: col, y: row }. */
@@ -887,12 +912,14 @@ export function BattleshipGame({
         setLoading(true);
         setError(null);
         setSuccess(null);
+        setMyPendingShot({ x, y });
         const signer = getContractSigner();
         await battleshipService.fire(sessionId, userAddress, x, y, signer);
         setSuccess(`Shot at (${x}, ${y}) submitted. Waiting for defender to resolve.`);
         await loadGameState();
         setTimeout(() => setSuccess(null), 3000);
       } catch (err) {
+        setMyPendingShot(null);
         console.error('Fire error:', err);
         setError(err instanceof Error ? err.message : 'Failed to fire');
       } finally {
@@ -1473,17 +1500,27 @@ export function BattleshipGame({
               <div className="inline-block border-2 border-gray-300 rounded-lg p-1 bg-gray-50">
                 <div className="grid gap-0.5" style={{ gridTemplateColumns: `repeat(${GRID_SIZE}, 1.75rem)` }}>
                   {Array.from({ length: GRID_SIZE }, (_, row) =>
-                    Array.from({ length: GRID_SIZE }, (_, col) => (
-                      <button
-                        key={`fire-${row}-${col}`}
-                        type="button"
-                        disabled={isBusy}
-                        onClick={() => handleFire(col, row)}
-                        className="w-7 h-7 rounded border border-gray-300 bg-white hover:border-red-400 hover:bg-red-50 text-xs font-mono flex items-center justify-center disabled:opacity-50"
-                      >
-                        {col},{row}
-                      </button>
-                    ))
+                    Array.from({ length: GRID_SIZE }, (_, col) => {
+                      const key = `${col},${row}`;
+                      const result = myShotsOnOpponent[key];
+                      return (
+                        <button
+                          key={`fire-${row}-${col}`}
+                          type="button"
+                          disabled={isBusy || result !== undefined}
+                          onClick={() => handleFire(col, row)}
+                          className={`w-7 h-7 rounded border text-xs font-mono flex items-center justify-center disabled:opacity-50 ${
+                            result !== undefined
+                              ? result.hit
+                                ? result.sunkShip ? 'bg-red-600 border-red-700 text-white' : 'bg-orange-500 border-orange-600 text-white'
+                                : 'bg-gray-400 border-gray-500 text-white'
+                              : 'border-gray-300 bg-white hover:border-red-400 hover:bg-red-50'
+                          }`}
+                        >
+                          {result !== undefined ? (result.hit ? (result.sunkShip ? '☠' : '✓') : '✗') : `${col},${row}`}
+                        </button>
+                      );
+                    })
                   )}
                 </div>
               </div>

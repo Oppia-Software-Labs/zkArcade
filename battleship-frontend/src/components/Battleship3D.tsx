@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { init, dispose } from '../battleship3d/main';
 
 export function Battleship3D() {
@@ -10,7 +10,8 @@ export function Battleship3D() {
     const container = containerRef.current;
     if (!container) return;
 
-    cleanupRef.current = init(container);
+    const result = init(container);
+    cleanupRef.current = result.dispose;
 
     return () => {
       if (cleanupRef.current) {
@@ -25,24 +26,36 @@ export function Battleship3D() {
   return (
     <div style={{ position: 'fixed', inset: 0, width: '100%', height: '100%' }}>
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
-      <Link
-        to="/play"
-        style={{
-          position: 'absolute',
-          top: 16,
-          left: 16,
-          padding: '8px 16px',
-          background: 'rgba(0,0,0,0.6)',
-          color: 'white',
-          borderRadius: 8,
-          textDecoration: 'none',
-          fontSize: 14,
-          fontWeight: 500,
-          zIndex: 10
-        }}
-      >
-        2D Game
-      </Link>
+      <div style={{ position: 'absolute', top: 16, left: 16, display: 'flex', gap: 8, zIndex: 10 }}>
+        <Link
+          to="/play"
+          style={{
+            padding: '8px 16px',
+            background: 'rgba(0,0,0,0.6)',
+            color: 'white',
+            borderRadius: 8,
+            textDecoration: 'none',
+            fontSize: 14,
+            fontWeight: 500
+          }}
+        >
+          2D Game
+        </Link>
+        <Link
+          to="/play3d"
+          style={{
+            padding: '8px 16px',
+            background: 'rgba(0,0,0,0.6)',
+            color: 'white',
+            borderRadius: 8,
+            textDecoration: 'none',
+            fontSize: 14,
+            fontWeight: 500
+          }}
+        >
+          3D Two-Player
+        </Link>
+      </div>
       <div
         style={{
           position: 'absolute',

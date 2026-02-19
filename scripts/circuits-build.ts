@@ -12,7 +12,7 @@
  */
 
 import { $ } from "bun";
-import { mkdir } from "fs/promises";
+import { mkdir, readdir, copyFile } from "fs/promises";
 import { join } from "path";
 
 const ROOT = import.meta.dir + "/..";
@@ -62,6 +62,21 @@ async function main() {
   }
 
   console.log("✅ All circuits built in circuits/build");
+
+  // Copy to battleship-frontend public so production build and dev (fallback) can serve WASM
+  const publicCircuits = join(ROOT, "battleship-frontend", "public", "circuits", "build");
+  await mkdir(publicCircuits, { recursive: true });
+  async function copyDir(src: string, dest: string) {
+    await mkdir(dest, { recursive: true });
+    for (const e of await readdir(src, { withFileTypes: true })) {
+      const s = join(src, e.name);
+      const d = join(dest, e.name);
+      if (e.isDirectory()) await copyDir(s, d);
+      else await copyFile(s, d);
+    }
+  }
+  await copyDir(BUILD_DIR, publicCircuits);
+  console.log("✅ Copied circuits/build to battleship-frontend/public/circuits/build");
 }
 
 main();

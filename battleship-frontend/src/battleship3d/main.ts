@@ -12,6 +12,44 @@ import { placeAIShips } from '../game/aiPlacement';
 import { config } from '../config';
 import type { GridCell } from '../game/gameState';
 
+/** Circuit-compatible placement: col, row, dir (1=horizontal, 0=vertical) per ship. */
+export interface ShipPositions {
+  ship_x: number[];
+  ship_y: number[];
+  ship_dir: number[];
+}
+
+/** State passed from React for contract (two-player) mode. */
+export interface ContractModeState {
+  phase: 'placement' | 'battle';
+  isMyTurn?: boolean;
+  hasPendingShot?: boolean;
+  iAmDefender?: boolean;
+  pendingShotX?: number;
+  pendingShotY?: number;
+  /** Keys "x,y" (col,row) for cells hit on my board. */
+  resolvedHitsOnMyBoard?: Set<string> | string[];
+  /** Keys "x,y" -> { hit, sunkShip } for my shots on opponent. */
+  myShotsOnOpponent?: Record<string, { hit: boolean; sunkShip: number }>;
+}
+
+/** Callbacks for contract mode: no AI, React drives lifecycle. */
+export interface ContractModeCallbacks {
+  onPlacementComplete: (positions: ShipPositions) => void;
+  onFire: (col: number, row: number) => void;
+  onResolveRequested?: () => void;
+}
+
+export interface InitOptions {
+  contractMode?: boolean;
+  callbacks?: ContractModeCallbacks;
+}
+
+export interface InitResult {
+  dispose: () => void;
+  setContractState?: (state: ContractModeState) => void;
+}
+
 const halfGrid = (GRID_SIZE - 1) / 2;
 const playerOffsetZ = halfGrid + 0.5; // shift so back edge of row 0 aligns with vertical grid at z=0
 const AI_TURN_DELAY_MS = 800;
@@ -23,6 +61,11 @@ let camera: THREE.PerspectiveCamera | null = null;
 let controls: OrbitControls | null = null;
 let raycaster: THREE.Raycaster | null = null;
 let mouse: THREE.Vector2 | null = null;
+
+let contractMode = false;
+let contractCallbacks: ContractModeCallbacks | null = null;
+let contractState: ContractModeState = { phase: 'placement' };
+let contractResolveOverlay: HTMLDivElement | null = null;
 
 function getGridCellFromScreenCoords(
   clientX: number,
@@ -86,10 +129,96 @@ async function placeShip(
   updateShipDock();
 
   if (gameState.availableShips.length === 0) {
-    placeAIShips();
-    gameState.state = 'PLAYER_TURN';
-    console.log('Battle start! Your turn.');
-    removeShipDock();
+    if (contractMode && contractCallbacks) {
+      const positions = buildShipPositionsFromShips();
+      contractCallbacks.onPlacementComplete(positions);
+      removeShipDock();
+    } else {
+      placeAIShips();
+      gameState.state = 'PLAYER_TURN';
+      console.log('Battle start! Your turn.');
+      removeShipDock();
+    }
+  }
+}
+
+/** Circuit expects ships in order: length 5, 4, 3, 3, 2. */
+const CIRCUIT_SHIP_LENGTHS = [5, 4, 3, 3, 2];
+
+function buildShipPositionsFromShips(): ShipPositions {
+  const ship_x: number[] = [];
+  const ship_y: number[] = [];
+  const ship_dir: number[] = [];
+  const byLength = [...gameState.ships].sort((a, b) => b.cells.length - a.cells.length);
+  if (byLength.length !== 5) return { ship_x, ship_y, ship_dir };
+  for (let i = 0; i < 5; i++) {
+    if (byLength[i].cells.length !== CIRCUIT_SHIP_LENGTHS[i]) return { ship_x, ship_y, ship_dir };
+    const ship = byLength[i];
+    const rows = ship.cells.map((c) => c.row);
+    const cols = ship.cells.map((c) => c.col);
+    const minRow = Math.min(...rows);
+    const minCol = Math.min(...cols);
+    const horizontal = cols.some((c, idx) => idx > 0 && c !== cols[0]);
+    ship_x.push(minCol);
+    ship_y.push(minRow);
+    ship_dir.push(horizontal ? 1 : 0);
+  }
+  return { ship_x, ship_y, ship_dir };
+}
+
+function applyContractStateToTiles(): void {
+  if (!contractState.resolvedHitsOnMyBoard && !contractState.myShotsOnOpponent) return;
+  const resolvedSet =
+    contractState.resolvedHitsOnMyBoard instanceof Set
+      ? contractState.resolvedHitsOnMyBoard
+      : new Set(contractState.resolvedHitsOnMyBoard ?? []);
+  for (let row = 0; row < GRID_SIZE; row++) {
+    for (let col = 0; col < GRID_SIZE; col++) {
+      const key = `${col},${row}`;
+      const hit = resolvedSet.has(key);
+      const hasShip = gameState.grid[row][col].hasShip;
+      setTileColor(gameState.grid[row][col].mesh, hit, hasShip);
+    }
+  }
+  const myShots = contractState.myShotsOnOpponent ?? {};
+  for (let row = 0; row < GRID_SIZE; row++) {
+    for (let col = 0; col < GRID_SIZE; col++) {
+      const key = `${col},${row}`;
+      const result = myShots[key];
+      const hit = result !== undefined;
+      const hasShip = result?.hit ?? false;
+      setTileColor(gameState.aiGrid[row][col].mesh, hit, hasShip);
+    }
+  }
+}
+
+function setContractStateImpl(state: ContractModeState): void {
+  contractState = state;
+  applyContractStateToTiles();
+  if (state.phase === 'battle' && state.iAmDefender && state.hasPendingShot && contractCallbacks?.onResolveRequested) {
+    showContractResolveOverlay();
+  } else {
+    removeContractResolveOverlay();
+  }
+}
+
+function showContractResolveOverlay(): void {
+  if (contractResolveOverlay || !renderer?.domElement.parentElement) return;
+  contractResolveOverlay = document.createElement('div');
+  contractResolveOverlay.style.cssText =
+    'position:absolute;top:60px;left:50%;transform:translateX(-50%);padding:10px 20px;background:rgba(234,179,8,0.95);color:#1f2937;font-weight:bold;border-radius:8px;z-index:15;pointer-events:auto;';
+  contractResolveOverlay.textContent = 'Pending shot — resolve in game controls above';
+  const parent = renderer.domElement.parentElement;
+  if (parent.style.position !== 'relative' && parent.style.position !== 'absolute') {
+    parent.style.position = 'relative';
+  }
+  parent.appendChild(contractResolveOverlay);
+}
+
+function removeContractResolveOverlay(): void {
+  if (contractResolveOverlay?.parentElement) {
+    contractResolveOverlay.parentElement.removeChild(contractResolveOverlay);
+    contractResolveOverlay = null;
   }
 }
 
@@ -439,10 +568,18 @@ function showGameOverOverlay(winner: 'player' | 'ai'): void {
 
 /**
  * Initialize the 3D scene, append renderer to DOM, and start animation loop.
- * @returns dispose function for cleanup
+ * @param container - DOM element to mount the canvas
+ * @param options - optional contract mode (no AI) with callbacks and state setter
+ * @returns dispose function and optionally setContractState for contract mode
  */
-export function init(container: HTMLElement): () => void {
-  if (!container) return () => {};
+export function init(container: HTMLElement, options?: InitOptions): InitResult {
+  const noopDispose = () => {};
+  if (!container) return { dispose: noopDispose };
+
+  contractMode = options?.contractMode ?? false;
+  contractCallbacks = options?.callbacks ?? null;
+  contractState = { phase: 'placement' };
+  removeContractResolveOverlay();
 
   const setup = setupScene(container);
   scene = setup.scene;
@@ -466,6 +603,19 @@ export function init(container: HTMLElement): () => void {
   createShipDock();
 
   const handleClick = (event: MouseEvent): void => {
+    if (contractMode && contractCallbacks && contractState.phase === 'battle') {
+      const tile = getClickedTile(event);
+      if (!tile) return;
+      if (
+        tile.grid === 'ai' &&
+        contractState.isMyTurn &&
+        !contractState.hasPendingShot &&
+        !(contractState.myShotsOnOpponent && contractState.myShotsOnOpponent[`${tile.col},${tile.row}`])
+      ) {
+        contractCallbacks.onFire(tile.col, tile.row);
+      }
+      return;
+    }
     if (gameState.state !== 'PLAYER_TURN') return;
     const tile = getClickedTile(event);
     if (!tile) return;
@@ -526,7 +676,7 @@ export function init(container: HTMLElement): () => void {
   }
   animate();
 
-  return () => {
+  const cleanup = () => {
     if (renderer) {
       renderer.domElement.removeEventListener('click', handleClick);
       renderer.domElement.removeEventListener('dragover', handleDragOver);
@@ -534,8 +684,17 @@ export function init(container: HTMLElement): () => void {
       renderer.domElement.removeEventListener('dragleave', handleDragLeave);
     }
     removeShipDock();
+    removeContractResolveOverlay();
+    contractMode = false;
+    contractCallbacks = null;
+    contractState = { phase: 'placement' };
     dispose();
     window.removeEventListener('resize', handleResize);
+  };
+
+  return {
+    dispose: cleanup,
+    setContractState: contractMode ? setContractStateImpl : undefined
   };
 }
 
@@ -545,6 +704,10 @@ export function init(container: HTMLElement): () => void {
 export function dispose(): void {
   removeShipDock();
   removeGhostPreview();
+  removeContractResolveOverlay();
+  contractMode = false;
+  contractCallbacks = null;
+  contractState = { phase: 'placement' };
   if (gameOverOverlay?.parentElement) {
     gameOverOverlay.parentElement.removeChild(gameOverOverlay);
     gameOverOverlay = null;

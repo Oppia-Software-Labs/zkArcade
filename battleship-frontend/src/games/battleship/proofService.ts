@@ -15,6 +15,43 @@ import buildBoardCommitWitnessCalculator from "./circuits/board_commit_witness_c
 /** Ship lengths in cell count: Carrier, Battleship, Cruiser, Submarine, Destroyer */
 const SHIP_LENS = [5, 4, 3, 3, 2] as const;
 
+/**
+ * Compute the 17 cell indices (row*10+col) from ship positions using the same formula as the circuit.
+ * Throws if any coordinate is out of range, ship_dir is not 0/1, or two cells overlap.
+ */
+function validateBoardLayout(shipPositions: ShipPosition): void {
+  const { ship_x, ship_y, ship_dir } = shipPositions;
+  if (ship_x.length !== 5 || ship_y.length !== 5 || ship_dir.length !== 5) {
+    throw new Error("Board must have exactly 5 ships (ship_x, ship_y, ship_dir each length 5).");
+  }
+  const cellIndices: number[] = [];
+  for (let s = 0; s < 5; s++) {
+    const len = SHIP_LENS[s];
+    if (ship_dir[s] !== 0 && ship_dir[s] !== 1) {
+      throw new Error(`Ship ${s}: dir must be 0 (vertical) or 1 (horizontal), got ${ship_dir[s]}.`);
+    }
+    const startX = ship_x[s];
+    const startY = ship_y[s];
+    if (startX < 0 || startX >= 10 || startY < 0 || startY >= 10) {
+      throw new Error(`Ship ${s}: start position (${startX}, ${startY}) must be in 0..9.`);
+    }
+    for (let k = 0; k < len; k++) {
+      const cell_x = startX + (ship_dir[s] === 1 ? k : 0);
+      const cell_y = startY + (ship_dir[s] === 0 ? k : 0);
+      if (cell_x < 0 || cell_x >= 10 || cell_y < 0 || cell_y >= 10) {
+        throw new Error(`Ship ${s} cell ${k}: (${cell_x}, ${cell_y}) is out of grid 0..9.`);
+      }
+      const idx = cell_y * 10 + cell_x;
+      if (cellIndices.includes(idx)) {
+        throw new Error(
+          "Ships overlap: two ships share the same cell. Please place ships so they do not overlap."
+        );
+      }
+      cellIndices.push(idx);
+    }
+  }
+}
+
 /** Board layout: 5 ships with (x, y, dir). dir: 0 = vertical, 1 = horizontal. */
 export interface ShipPosition {
   ship_x: number[];
@@ -76,6 +113,7 @@ export async function computeBoardCommitment(
   salt: bigint | string,
   config?: ProofServiceConfig
 ): Promise<Uint8Array> {
+  validateBoardLayout(shipPositions);
   const base = config?.circuitsBaseUrl ?? DEFAULT_CIRCUITS_BASE;
   const wasmUrl = `${base}/board_commit_js/board_commit.wasm`;
   const res = await fetch(wasmUrl);
@@ -243,13 +281,17 @@ export async function generateResolveShotProof(
   const zkeyUrl = `${base}/resolve_shot_0000.zkey`;
 
   const { groth16 } = await import("snarkjs");
-  const { proof, publicSignals } = await groth16.fullProve(witnessInput, wasmUrl, zkeyUrl);
+  const { proof, publicSignals } = await groth16.fullProve(
+    witnessInput as unknown as Record<string, unknown>,
+    wasmUrl,
+    zkeyUrl
+  );
 
   const proofBigInt = {
-    pi_a: proof.pi_a.map((x: string | number) => BigInt(x)),
-    pi_b: proof.pi_b.map((row: (string | number)[]) => row.map((x: string | number) => BigInt(x))),
-    pi_c: proof.pi_c.map((x: string | number) => BigInt(x)),
+    pi_a: (proof.pi_a as (string | number)[]).map((x) => BigInt(x)),
+    pi_b: (proof.pi_b as (string | number)[][]).map((row) => row.map((x) => BigInt(x))),
+    pi_c: (proof.pi_c as (string | number)[]).map((x) => BigInt(x)),
   };
-  const publicBigInt = publicSignals.map((x: string | number) => BigInt(x));
+  const publicBigInt = (publicSignals as (string | number)[]).map((x) => BigInt(x));
   return serializeAdapterPayload(proofBigInt, publicBigInt);
 }
