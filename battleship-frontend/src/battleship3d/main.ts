@@ -507,6 +507,81 @@ function resetGame(): void {
   }
 }
 
+/**
+ * Reset the player board for contract-mode player switching.
+ * Clears all ship meshes, resets grid and AI-grid cells.
+ * @param options.showDock — if false, skip re-creating the ship dock (e.g. during battle)
+ */
+export function resetPlayerBoard(options?: { showDock?: boolean }): void {
+  if (!scene) return;
+
+  for (const ship of gameState.ships) {
+    scene.remove(ship.mesh);
+    disposeObject3D(ship.mesh);
+  }
+
+  for (const row of gameState.grid) {
+    for (const cell of row) {
+      cell.hasShip = false;
+      cell.hit = false;
+      setTileColor(cell.mesh, false, false);
+    }
+  }
+  for (const row of gameState.aiGrid) {
+    for (const cell of row) {
+      cell.hasShip = false;
+      cell.hit = false;
+      setTileColor(cell.mesh, false, false);
+    }
+  }
+
+  gameState.ships = [];
+  gameState.aiShips = [];
+  resetAvailableShips();
+  gameState.placementOrientation = 'horizontal';
+
+  removeGhostPreview();
+  removeShipDock();
+  if (contractMode && options?.showDock !== false) {
+    createShipDock();
+  }
+}
+
+/**
+ * Programmatically restore ship placements on the 3D board.
+ * Ships in circuit order: Carrier(5), Battleship(4), Cruiser(3), Submarine(3), Destroyer(2).
+ * Removes the ship dock after all ships are placed, then re-applies contract state to
+ * update tile colors (so hit/miss markers appear correctly on the restored grid).
+ */
+export async function restoreShipPlacements(positions: ShipPositions): Promise<void> {
+  if (!scene || positions.ship_x.length !== 5) return;
+
+  const lengths = [5, 4, 3, 3, 2];
+  for (let i = 0; i < 5; i++) {
+    const col = positions.ship_x[i];
+    const row = positions.ship_y[i];
+    const dir = positions.ship_dir[i];
+    const length = lengths[i];
+    const orientation: 'horizontal' | 'vertical' = dir === 1 ? 'horizontal' : 'vertical';
+
+    const cells = getShipCells(row, col, length, orientation);
+    const mesh = await createShipMeshFromModel(length, orientation);
+    positionShipMesh(mesh, cells, 0, playerOffsetZ);
+    scene.add(mesh);
+
+    for (const cell of cells) {
+      gameState.grid[cell.row][cell.col].hasShip = true;
+    }
+
+    gameState.ships.push({ cells, hits: 0, mesh });
+    const idx = gameState.availableShips.indexOf(length);
+    if (idx !== -1) gameState.availableShips.splice(idx, 1);
+  }
+
+  removeShipDock();
+  applyContractStateToTiles();
+}
+
 function showGameOverOverlay(winner: 'player' | 'ai'): void {
   if (!renderer?.domElement.parentElement) return;
 

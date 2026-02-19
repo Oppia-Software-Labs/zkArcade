@@ -577,6 +577,7 @@ export class BattleshipService {
 
   /**
    * Commit board commitment (32 bytes) for the current player. Call after placing ships.
+   * Returns result and transaction hash for Explorer link.
    */
   async commitBoard(
     sessionId: number,
@@ -584,7 +585,7 @@ export class BattleshipService {
     boardCommitment: Buffer,
     signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>,
     authTtlMinutes?: number
-  ) {
+  ): Promise<{ result: void; txHash: string | undefined }> {
     if (boardCommitment.length !== 32) {
       throw new Error('board_commitment must be 32 bytes');
     }
@@ -605,7 +606,10 @@ export class BattleshipService {
       const errorMessage = this.extractErrorFromDiagnostics(sentTx.getTransactionResponse);
       throw new Error(`Transaction failed: ${errorMessage}`);
     }
-    return sentTx.result;
+    const txHash =
+      (sentTx as { sendTransactionResponse?: { hash?: string } }).sendTransactionResponse?.hash ??
+      (sentTx.getTransactionResponse as { txHash?: string } | undefined)?.txHash;
+    return { result: sentTx.result, txHash };
   }
 
   /**

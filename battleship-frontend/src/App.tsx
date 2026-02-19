@@ -44,6 +44,7 @@ function HomePage() {
           {isConnecting && <div className="notice info" style={{ marginTop: '1rem' }}>Connecting...</div>}
         </div>
       ) : (
+        /* Not keyed by userAddress so BattleshipGame can preserve per-player UI state when switching dev wallets. */
         <BattleshipGame
           userAddress={userAddress}
           currentEpoch={1}

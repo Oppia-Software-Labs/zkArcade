@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { Link } from 'react-router';
 import { Layout } from './Layout';
-import { init, type ShipPositions, type ContractModeState } from '../battleship3d/main';
+import { init, resetPlayerBoard, restoreShipPlacements, type ShipPositions, type ContractModeState } from '../battleship3d/main';
 import { BattleshipService } from '../games/battleship/battleshipService';
 import { useWallet } from '../hooks/useWallet';
 import { BATTLESHIP_CONTRACT } from '@/utils/constants';
@@ -34,6 +34,15 @@ const createRandomSessionId = (): number => {
 };
 
 const battleshipService = new BattleshipService(BATTLESHIP_CONTRACT);
+
+interface PerPlayerState {
+  placementFrom3D: ShipPositions | null;
+  mySalt: string;
+  myBoardCommitment: Uint8Array | null;
+  resolvedHitsOnMyBoard: Set<string>;
+  myShotsOnOpponent: Record<string, { hit: boolean; sunkShip: number }>;
+  myPendingShot: { x: number; y: number } | null;
+}
 
 function phaseFromGame(phase: GamePhase): 'placement' | 'battle' | 'ended' {
   if (phase.tag === 'WaitingForBoards') return 'placement';
@@ -78,6 +87,16 @@ export function Battleship3DWithContract() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [perPlayerUi, setPerPlayerUi] = useState<Record<string, PerPlayerState>>({});
+  const prevUserAddressRef = useRef<string>(userAddress);
+  const [contractSyncTrigger, setContractSyncTrigger] = useState(0);
+
+  const sessionIdRef = useRef(sessionId);
+  const userAddressRef = useRef(userAddress);
+  const getContractSignerRef = useRef(getContractSigner);
+  useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
+  useEffect(() => { userAddressRef.current = userAddress; }, [userAddress]);
+  useEffect(() => { getContractSignerRef.current = getContractSigner; }, [getContractSigner]);
 
   const isPlayer1 = gameState && gameState.player1 === userAddress;
   const isPlayer2 = gameState && gameState.player2 === userAddress;
@@ -92,6 +111,13 @@ export function Battleship3DWithContract() {
     DevWalletService.isDevModeAvailable() &&
     DevWalletService.isPlayerAvailable(1) &&
     DevWalletService.isPlayerAvailable(2);
+
+  const haveICommittedBoard = useMemo(() => {
+    if (!gameState) return false;
+    if (isPlayer1 && gameState.board_commitment_p1 != null && gameState.board_commitment_p1 !== undefined) return true;
+    if (isPlayer2 && gameState.board_commitment_p2 != null && gameState.board_commitment_p2 !== undefined) return true;
+    return false;
+  }, [gameState, isPlayer1, isPlayer2]);
 
   const loadGameState = async () => {
     try {
@@ -132,6 +158,66 @@ export function Battleship3DWithContract() {
     if (myPendingShot && myPendingShot.x === px && myPendingShot.y === py) setMyPendingShot(null);
   }, [gameState, userAddress, myPendingShot]);
 
+  // Save outgoing player's UI state and restore incoming player's cached state when switching dev wallets
+  useEffect(() => {
+    if (prevUserAddressRef.current === userAddress) return;
+    if (gamePhase === 'create') {
+      prevUserAddressRef.current = userAddress;
+      return;
+    }
+
+    const prevKey = `${sessionId}:${prevUserAddressRef.current}`;
+    const nextKey = `${sessionId}:${userAddress}`;
+
+    let cachedForNext: PerPlayerState | undefined;
+    setPerPlayerUi((prev) => {
+      const updated = { ...prev };
+      updated[prevKey] = {
+        placementFrom3D: placementFrom3D ? { ...placementFrom3D } : null,
+        mySalt,
+        myBoardCommitment: myBoardCommitment ? new Uint8Array(myBoardCommitment) : null,
+        resolvedHitsOnMyBoard: new Set(resolvedHitsOnMyBoard),
+        myShotsOnOpponent: { ...myShotsOnOpponent },
+        myPendingShot: myPendingShot ? { ...myPendingShot } : null,
+      };
+      cachedForNext = updated[nextKey];
+      return updated;
+    });
+
+    prevUserAddressRef.current = userAddress;
+
+    const inBattle = gamePhase === 'battle';
+
+    // Reset the 3D board so the new player gets a clean slate.
+    // During battle, skip dock creation — no ships to place.
+    if (initResultRef.current) {
+      resetPlayerBoard({ showDock: !inBattle });
+    }
+
+    if (cachedForNext) {
+      setPlacementFrom3D(cachedForNext.placementFrom3D);
+      setMySalt(cachedForNext.mySalt);
+      setMyBoardCommitment(cachedForNext.myBoardCommitment ? new Uint8Array(cachedForNext.myBoardCommitment) : null);
+      setResolvedHitsOnMyBoard(new Set(cachedForNext.resolvedHitsOnMyBoard));
+      setMyShotsOnOpponent({ ...cachedForNext.myShotsOnOpponent });
+      setMyPendingShot(cachedForNext.myPendingShot ? { ...cachedForNext.myPendingShot } : null);
+
+      if (cachedForNext.placementFrom3D) {
+        restoreShipPlacements(cachedForNext.placementFrom3D).then(() => {
+          // Force the setContractState effect to re-fire now that grid.hasShip is correct
+          setContractSyncTrigger((c) => c + 1);
+        });
+      }
+    } else {
+      setPlacementFrom3D(null);
+      setMySalt('');
+      setMyBoardCommitment(null);
+      setResolvedHitsOnMyBoard(new Set());
+      setMyShotsOnOpponent({});
+      setMyPendingShot(null);
+    }
+  }, [userAddress, sessionId]);
+
   // Sync contract state into 3D when in battle
   useEffect(() => {
     const setContractState = initResultRef.current?.setContractState;
@@ -146,9 +232,10 @@ export function Battleship3DWithContract() {
       resolvedHitsOnMyBoard,
       myShotsOnOpponent,
     });
-  }, [gamePhase, isMyTurn, hasPendingShot, iAmDefender, gameState?.pending_shot_x, gameState?.pending_shot_y, resolvedHitsOnMyBoard, myShotsOnOpponent]);
+  }, [gamePhase, isMyTurn, hasPendingShot, iAmDefender, gameState?.pending_shot_x, gameState?.pending_shot_y, resolvedHitsOnMyBoard, myShotsOnOpponent, contractSyncTrigger]);
 
-  // Init 3D once when we have a container and we're in placement or battle; do not re-init when going placement -> battle
+  // Init 3D once when we have a container and we're in placement or battle; do not re-init when going placement -> battle.
+  // Callbacks use refs to always pick up the latest sessionId/userAddress/signer even after wallet switches.
   useEffect(() => {
     const container = containerRef.current;
     if (gamePhase !== 'placement' && gamePhase !== 'battle') return;
@@ -160,14 +247,20 @@ export function Battleship3DWithContract() {
     };
 
     const handleFire = (col: number, row: number) => {
+      const currentSession = sessionIdRef.current;
+      const currentUser = userAddressRef.current;
+      const currentSigner = getContractSignerRef.current;
       setMyPendingShot({ x: col, y: row });
       setLoading(true);
       setError(null);
       battleshipService
-        .fire(sessionId, userAddress, col, row, getContractSigner())
+        .fire(currentSession, currentUser, col, row, currentSigner())
         .then(() => {
           setSuccess(`Shot at (${col}, ${row}) submitted. Waiting for defender to resolve.`);
-          loadGameState();
+          battleshipService.getGame(currentSession).then((game) => {
+            setGameState(game);
+            if (game) setGamePhase(phaseFromGame(game.phase));
+          });
           setTimeout(() => setSuccess(null), 3000);
         })
         .catch((err) => {
@@ -185,8 +278,7 @@ export function Battleship3DWithContract() {
       },
     });
     initResultRef.current = result;
-    // Do not dispose here when deps change (e.g. placement -> battle); see cleanup effect below
-  }, [gamePhase, sessionId, userAddress]);
+  }, [gamePhase]);
 
   // Dispose 3D when leaving placement/battle or on unmount
   useEffect(() => {
@@ -445,56 +537,115 @@ export function Battleship3DWithContract() {
               }}
             />
             <div className="card" style={{ marginTop: 16, maxWidth: 560 }}>
-              {gamePhase === 'placement' && (
-                <>
-                  <p className="text-sm text-gray-700 mb-2">
-                    Place your 5 ships on the left grid (drag from dock). When done, enter an optional salt and commit.
-                  </p>
-                  {placementFrom3D && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                      <label className="text-xs font-bold text-gray-600">Salt (optional)</label>
-                      <input
-                        type="text"
-                        value={mySalt}
-                        onChange={(e) => setMySalt(e.target.value)}
-                        placeholder="Leave empty for random"
-                        className="input"
-                      />
-                      <button
-                        type="button"
-                        onClick={handleCommitBoard}
-                        disabled={loading || !placementFrom3D}
-                        className="btn primary"
-                      >
-                        {loading ? 'Committing...' : 'Commit board (on-chain)'}
-                      </button>
+              {gamePhase === 'placement' && gameState && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <div style={{ display: 'flex', gap: 12 }}>
+                    <div style={{
+                      flex: 1, padding: '8px 12px', borderRadius: 8,
+                      border: `2px solid ${isPlayer1 ? '#a78bfa' : '#e5e7eb'}`,
+                      background: isPlayer1 ? '#f5f3ff' : '#fff',
+                    }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase' }}>Player 1</div>
+                      <div style={{ fontFamily: 'monospace', fontSize: 13 }}>{gameState.player1.slice(0, 8)}...{gameState.player1.slice(-4)}</div>
+                      <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
+                        Board: {gameState.board_commitment_p1 != null ? 'Committed' : 'Waiting...'}
+                      </div>
                     </div>
+                    <div style={{
+                      flex: 1, padding: '8px 12px', borderRadius: 8,
+                      border: `2px solid ${isPlayer2 ? '#a78bfa' : '#e5e7eb'}`,
+                      background: isPlayer2 ? '#f5f3ff' : '#fff',
+                    }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase' }}>Player 2</div>
+                      <div style={{ fontFamily: 'monospace', fontSize: 13 }}>{gameState.player2.slice(0, 8)}...{gameState.player2.slice(-4)}</div>
+                      <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
+                        Board: {gameState.board_commitment_p2 != null ? 'Committed' : 'Waiting...'}
+                      </div>
+                    </div>
+                  </div>
+
+                  {haveICommittedBoard ? (
+                    <p className="text-sm" style={{ color: '#166534', fontWeight: 600 }}>
+                      Your board is committed. Waiting for the other player to commit theirs...
+                    </p>
+                  ) : (
+                    <>
+                      <p className="text-sm text-gray-700">
+                        Place your 5 ships on the left grid (drag from dock). When done, enter an optional salt and commit.
+                      </p>
+                      {placementFrom3D && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          <label className="text-xs font-bold text-gray-600">Salt (optional)</label>
+                          <input
+                            type="text"
+                            value={mySalt}
+                            onChange={(e) => setMySalt(e.target.value)}
+                            placeholder="Leave empty for random"
+                            className="input"
+                          />
+                          <button
+                            type="button"
+                            onClick={handleCommitBoard}
+                            disabled={loading || !placementFrom3D}
+                            className="btn primary"
+                          >
+                            {loading ? 'Committing...' : 'Commit board (on-chain)'}
+                          </button>
+                        </div>
+                      )}
+                    </>
                   )}
-                </>
+                </div>
               )}
-              {gamePhase === 'battle' && (
-                <>
+              {gamePhase === 'battle' && gameState && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <div style={{ display: 'flex', gap: 12 }}>
+                    <div style={{
+                      flex: 1, padding: '8px 12px', borderRadius: 8,
+                      border: `2px solid ${isPlayer1 ? '#a78bfa' : '#e5e7eb'}`,
+                      background: isPlayer1 ? '#f5f3ff' : '#fff',
+                    }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase' }}>Player 1</div>
+                      <div style={{ fontFamily: 'monospace', fontSize: 13 }}>{gameState.player1.slice(0, 8)}...{gameState.player1.slice(-4)}</div>
+                      <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
+                        Hits: {gameState.hits_on_p1} &middot; Sunk: {gameState.sunk_ships_on_p1}
+                      </div>
+                    </div>
+                    <div style={{
+                      flex: 1, padding: '8px 12px', borderRadius: 8,
+                      border: `2px solid ${isPlayer2 ? '#a78bfa' : '#e5e7eb'}`,
+                      background: isPlayer2 ? '#f5f3ff' : '#fff',
+                    }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase' }}>Player 2</div>
+                      <div style={{ fontFamily: 'monospace', fontSize: 13 }}>{gameState.player2.slice(0, 8)}...{gameState.player2.slice(-4)}</div>
+                      <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
+                        Hits: {gameState.hits_on_p2} &middot; Sunk: {gameState.sunk_ships_on_p2}
+                      </div>
+                    </div>
+                  </div>
+
                   {hasPendingShot && iAmDefender && (
                     <button
                       type="button"
                       onClick={handleResolveShot}
                       disabled={loading || !myBoardCommitment}
                       className="btn primary"
-                      style={{ marginBottom: 8 }}
                     >
                       {loading ? 'Generating proof...' : 'Resolve shot (proof + submit)'}
                     </button>
                   )}
                   {hasPendingShot && !iAmDefender && (
-                    <p className="text-sm text-amber-800">Waiting for defender to resolve your shot.</p>
+                    <p className="text-sm" style={{ color: '#92400e' }}>Waiting for defender to resolve your shot.</p>
                   )}
                   {!hasPendingShot && isMyTurn && (
-                    <p className="text-sm text-gray-700">Your turn — click the right grid to fire.</p>
+                    <p className="text-sm" style={{ color: '#1d4ed8', fontWeight: 600 }}>Your turn — click the opponent&apos;s grid (right) to fire.</p>
                   )}
                   {!hasPendingShot && !isMyTurn && (isPlayer1 || isPlayer2) && (
-                    <p className="text-sm text-gray-600">Opponent&apos;s turn.</p>
+                    <p className="text-sm" style={{ color: '#6b7280' }}>
+                      Opponent&apos;s turn. Switch wallets to play as the other player.
+                    </p>
                   )}
-                </>
+                </div>
               )}
               <Link to="/play" style={{ display: 'inline-block', marginTop: 12, fontSize: 14 }}>
                 ← 2D Game

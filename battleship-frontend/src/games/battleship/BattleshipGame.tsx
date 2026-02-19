@@ -41,6 +41,19 @@ interface BattleshipGameProps {
   onGameComplete: () => void;
 }
 
+/** Per-player UI state cached when switching dev wallets. Key: `${sessionId}:${userAddress}` */
+export interface PlayerUiState {
+  placementShips: { x: number; y: number; dir: number }[];
+  placementIndex: number;
+  placementOrientation: 'horizontal' | 'vertical';
+  mySalt: string;
+  myBoardCommitment: Uint8Array | null;
+  resolvedHitsOnMyBoard: Set<string>;
+  myPendingShot: { x: number; y: number } | null;
+  myShotsOnOpponent: Record<string, { hit: boolean; sunkShip: number }>;
+  lastCommitTxHash: string | null;
+}
+
 export function BattleshipGame({
   userAddress,
   availablePoints,
@@ -86,10 +99,67 @@ export function BattleshipGame({
   const [myPendingShot, setMyPendingShot] = useState<{ x: number; y: number } | null>(null);
   /** My shots on opponent's board: key "x,y" -> { hit, sunkShip }. Filled from last_resolved_* when we're the shooter. */
   const [myShotsOnOpponent, setMyShotsOnOpponent] = useState<Record<string, { hit: boolean; sunkShip: number }>>({});
+  /** Transaction hash from last commit_board (for View on Explorer link). */
+  const [lastCommitTxHash, setLastCommitTxHash] = useState<string | null>(null);
+
+  /** Per-player UI state cache keyed by `${sessionId}:${userAddress}` so switching players restores each board. */
+  const [perPlayerUi, setPerPlayerUi] = useState<Record<string, PlayerUiState>>({});
+
+  const prevUserAddressRef = useRef<string>(userAddress);
 
   useEffect(() => {
     setPlayer1Address(userAddress);
   }, [userAddress]);
+
+  /** When switching player (dev wallet), save outgoing player's UI state and restore incoming player's cached state. */
+  useEffect(() => {
+    if (prevUserAddressRef.current === userAddress) return;
+
+    const prevKey = `${sessionId}:${prevUserAddressRef.current}`;
+    const nextKey = `${sessionId}:${userAddress}`;
+
+    let cachedForNext: PlayerUiState | undefined;
+    setPerPlayerUi((prev) => {
+      const updated = { ...prev };
+      updated[prevKey] = {
+        placementShips: [...placementShips],
+        placementIndex,
+        placementOrientation,
+        mySalt,
+        myBoardCommitment: myBoardCommitment ? new Uint8Array(myBoardCommitment) : null,
+        resolvedHitsOnMyBoard: new Set(resolvedHitsOnMyBoard),
+        myPendingShot: myPendingShot ? { ...myPendingShot } : null,
+        myShotsOnOpponent: { ...myShotsOnOpponent },
+        lastCommitTxHash,
+      };
+      cachedForNext = updated[nextKey];
+      return updated;
+    });
+
+    prevUserAddressRef.current = userAddress;
+
+    if (cachedForNext) {
+      setPlacementShips(cachedForNext.placementShips);
+      setPlacementIndex(cachedForNext.placementIndex);
+      setPlacementOrientation(cachedForNext.placementOrientation);
+      setMySalt(cachedForNext.mySalt);
+      setMyBoardCommitment(cachedForNext.myBoardCommitment ? new Uint8Array(cachedForNext.myBoardCommitment) : null);
+      setResolvedHitsOnMyBoard(new Set(cachedForNext.resolvedHitsOnMyBoard));
+      setMyPendingShot(cachedForNext.myPendingShot ? { ...cachedForNext.myPendingShot } : null);
+      setMyShotsOnOpponent({ ...cachedForNext.myShotsOnOpponent });
+      setLastCommitTxHash(cachedForNext.lastCommitTxHash);
+    } else {
+      setPlacementShips([]);
+      setPlacementIndex(0);
+      setPlacementOrientation('horizontal');
+      setMySalt('');
+      setMyBoardCommitment(null);
+      setResolvedHitsOnMyBoard(new Set());
+      setMyPendingShot(null);
+      setMyShotsOnOpponent({});
+      setLastCommitTxHash(null);
+    }
+  }, [userAddress, sessionId]);
 
   useEffect(() => {
     if (createMode === 'import' && !importPlayer2Points.trim()) {
@@ -152,6 +222,7 @@ export function BattleshipGame({
     setXdrParseSuccess(false);
     setPlayer1Address(userAddress);
     setPlayer1Points(DEFAULT_POINTS);
+    setPerPlayerUi({});
     resetPlacementState();
   };
 
@@ -862,9 +933,10 @@ export function BattleshipGame({
         };
         const commitment = await computeBoardCommitment(shipPositions, salt);
         const signer = getContractSigner();
-        await battleshipService.commitBoard(sessionId, userAddress, Buffer.from(commitment), signer);
+        const { txHash } = await battleshipService.commitBoard(sessionId, userAddress, Buffer.from(commitment), signer);
         setMyBoardCommitment(commitment);
         setMySalt(salt.toString());
+        setLastCommitTxHash(txHash ?? null);
         setSuccess('Board committed on-chain.');
         await loadGameState();
         setTimeout(() => setSuccess(null), 3000);
@@ -886,6 +958,13 @@ export function BattleshipGame({
     setResolvedHitsOnMyBoard(new Set());
     setMyPendingShot(null);
     setMyShotsOnOpponent({});
+    setLastCommitTxHash(null);
+    const uiKey = `${sessionId}:${userAddress}`;
+    setPerPlayerUi((prev) => {
+      const next = { ...prev };
+      delete next[uiKey];
+      return next;
+    });
   };
 
   /** 17 board cells in circuit layout order (Carrier, Battleship, Cruiser, Submarine, Destroyer). Each { x: col, y: row }. */
@@ -1439,22 +1518,44 @@ export function BattleshipGame({
                     placeholder="Leave empty for random"
                     className="w-full max-w-xs px-3 py-2 rounded-lg border-2 border-gray-200 text-sm font-mono"
                   />
-                  <button
-                    type="button"
-                    onClick={handleCommitBoard}
-                    disabled={isBusy}
-                    className="w-full max-w-xs py-3 rounded-xl font-bold text-white bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 disabled:opacity-50"
-                  >
-                    {loading ? 'Committing...' : 'Commit board (on-chain)'}
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleCommitBoard}
+                      disabled={isBusy}
+                      className="py-3 px-4 rounded-xl font-bold text-white bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 disabled:opacity-50"
+                    >
+                      {loading ? 'Committing...' : 'Commit board (on-chain)'}
+                    </button>
+                    {lastCommitTxHash && (
+                      <a
+                        href={`https://stellar.expert/explorer/testnet/tx/${lastCommitTxHash}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sm text-blue-600 hover:text-blue-800 underline"
+                      >
+                        View on Explorer
+                      </a>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
           )}
 
           {haveICommittedBoard && (
-            <div className="p-4 bg-green-50 border-2 border-green-200 rounded-xl">
+            <div className="p-4 bg-green-50 border-2 border-green-200 rounded-xl space-y-2">
               <p className="text-sm font-semibold text-green-800">✓ You have committed your board. Waiting for the other player…</p>
+              {lastCommitTxHash && (
+                <a
+                  href={`https://stellar.expert/explorer/testnet/tx/${lastCommitTxHash}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm text-blue-600 hover:text-blue-800 underline"
+                >
+                  View on Explorer
+                </a>
+              )}
             </div>
           )}
         </div>
@@ -1494,41 +1595,122 @@ export function BattleshipGame({
             </div>
           )}
 
-          {!hasPendingShot && (isPlayer1 || isPlayer2) && isMyTurn && (
-            <div className="space-y-3">
-              <p className="text-sm font-semibold text-gray-700">Your turn — pick a cell to fire at (opponent&apos;s board):</p>
-              <div className="inline-block border-2 border-gray-300 rounded-lg p-1 bg-gray-50">
-                <div className="grid gap-0.5" style={{ gridTemplateColumns: `repeat(${GRID_SIZE}, 1.75rem)` }}>
-                  {Array.from({ length: GRID_SIZE }, (_, row) =>
-                    Array.from({ length: GRID_SIZE }, (_, col) => {
-                      const key = `${col},${row}`;
-                      const result = myShotsOnOpponent[key];
-                      return (
-                        <button
-                          key={`fire-${row}-${col}`}
-                          type="button"
-                          disabled={isBusy || result !== undefined}
-                          onClick={() => handleFire(col, row)}
-                          className={`w-7 h-7 rounded border text-xs font-mono flex items-center justify-center disabled:opacity-50 ${
-                            result !== undefined
-                              ? result.hit
-                                ? result.sunkShip ? 'bg-red-600 border-red-700 text-white' : 'bg-orange-500 border-orange-600 text-white'
-                                : 'bg-gray-400 border-gray-500 text-white'
-                              : 'border-gray-300 bg-white hover:border-red-400 hover:bg-red-50'
-                          }`}
-                        >
-                          {result !== undefined ? (result.hit ? (result.sunkShip ? '☠' : '✓') : '✗') : `${col},${row}`}
-                        </button>
-                      );
-                    })
-                  )}
-                </div>
+          {/* Two fixed boards: left = Player 1's side, right = Player 2's side. When you switch player, you see the other board. */}
+          {(isPlayer1 || isPlayer2) && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Left: Player 1's board — if you're P1 you see your ships + hits; if you're P2 you see your shots on P1 */}
+              <div className={`p-4 rounded-xl border-2 ${isPlayer1 ? 'border-teal-300 bg-teal-50' : 'border-gray-200 bg-white'}`}>
+                <p className="text-sm font-bold text-gray-800 mb-1">Player 1&apos;s board</p>
+                <p className="text-xs text-gray-600 mb-2">{isPlayer1 ? 'Your board — your ships and opponent hits' : 'Your shots on Player 1'}</p>
+                {isPlayer1 ? (
+                  <div className="inline-block border-2 border-gray-300 rounded-lg p-1 bg-white">
+                    <div className="grid gap-0.5" style={{ gridTemplateColumns: `repeat(${GRID_SIZE}, 1.75rem)` }}>
+                      {Array.from({ length: GRID_SIZE }, (_, row) =>
+                        Array.from({ length: GRID_SIZE }, (_, col) => {
+                          const key = `${col},${row}`;
+                          const hasShip = placementGrid[row][col];
+                          const isHit = resolvedHitsOnMyBoard.has(key);
+                          return (
+                            <div
+                              key={`p1-${row}-${col}`}
+                              className={`w-7 h-7 rounded border text-xs font-mono flex items-center justify-center ${
+                                isHit ? 'bg-red-500 border-red-600 text-white' : hasShip ? 'bg-teal-500 border-teal-600 text-white' : 'bg-white border-gray-300'
+                              }`}
+                            >
+                              {isHit ? '✓' : hasShip ? '■' : ''}
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="inline-block border-2 border-gray-300 rounded-lg p-1 bg-gray-50">
+                    <div className="grid gap-0.5" style={{ gridTemplateColumns: `repeat(${GRID_SIZE}, 1.75rem)` }}>
+                      {Array.from({ length: GRID_SIZE }, (_, row) =>
+                        Array.from({ length: GRID_SIZE }, (_, col) => {
+                          const key = `${col},${row}`;
+                          const result = myShotsOnOpponent[key];
+                          return (
+                            <div
+                              key={`p1-shot-${row}-${col}`}
+                              className={`w-7 h-7 rounded border text-xs font-mono flex items-center justify-center ${
+                                result !== undefined
+                                  ? result.hit
+                                    ? result.sunkShip ? 'bg-red-600 border-red-700 text-white' : 'bg-orange-500 border-orange-600 text-white'
+                                    : 'bg-gray-400 border-gray-500 text-white'
+                                  : 'bg-white border-gray-300'
+                              }`}
+                            >
+                              {result !== undefined ? (result.hit ? (result.sunkShip ? '☠' : '✓') : '✗') : ''}
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Right: Player 2's board — if you're P2 you see your ships + hits; if you're P1 you see your shots on P2 (and fire here when your turn) */}
+              <div className={`p-4 rounded-xl border-2 ${isPlayer2 ? 'border-teal-300 bg-teal-50' : 'border-gray-200 bg-white'}`}>
+                <p className="text-sm font-bold text-gray-800 mb-1">Player 2&apos;s board</p>
+                <p className="text-xs text-gray-600 mb-2">
+                  {isPlayer2 ? 'Your board — your ships and opponent hits' : 'Your shots on Player 2' + (isMyTurn ? ' — pick a cell to fire' : '')}
+                </p>
+                {isPlayer2 ? (
+                  <div className="inline-block border-2 border-gray-300 rounded-lg p-1 bg-white">
+                    <div className="grid gap-0.5" style={{ gridTemplateColumns: `repeat(${GRID_SIZE}, 1.75rem)` }}>
+                      {Array.from({ length: GRID_SIZE }, (_, row) =>
+                        Array.from({ length: GRID_SIZE }, (_, col) => {
+                          const key = `${col},${row}`;
+                          const hasShip = placementGrid[row][col];
+                          const isHit = resolvedHitsOnMyBoard.has(key);
+                          return (
+                            <div
+                              key={`p2-${row}-${col}`}
+                              className={`w-7 h-7 rounded border text-xs font-mono flex items-center justify-center ${
+                                isHit ? 'bg-red-500 border-red-600 text-white' : hasShip ? 'bg-teal-500 border-teal-600 text-white' : 'bg-white border-gray-300'
+                              }`}
+                            >
+                              {isHit ? '✓' : hasShip ? '■' : ''}
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="inline-block border-2 border-gray-300 rounded-lg p-1 bg-gray-50">
+                    <div className="grid gap-0.5" style={{ gridTemplateColumns: `repeat(${GRID_SIZE}, 1.75rem)` }}>
+                      {Array.from({ length: GRID_SIZE }, (_, row) =>
+                        Array.from({ length: GRID_SIZE }, (_, col) => {
+                          const key = `${col},${row}`;
+                          const result = myShotsOnOpponent[key];
+                          return (
+                            <button
+                              key={`fire-${row}-${col}`}
+                              type="button"
+                              disabled={isBusy || result !== undefined || !isMyTurn}
+                              onClick={() => handleFire(col, row)}
+                              className={`w-7 h-7 rounded border text-xs font-mono flex items-center justify-center disabled:opacity-50 ${
+                                result !== undefined
+                                  ? result.hit
+                                    ? result.sunkShip ? 'bg-red-600 border-red-700 text-white' : 'bg-orange-500 border-orange-600 text-white'
+                                    : 'bg-gray-400 border-gray-500 text-white'
+                                  : 'border-gray-300 bg-white hover:border-red-400 hover:bg-red-50'
+                              }`}
+                            >
+                              {result !== undefined ? (result.hit ? (result.sunkShip ? '☠' : '✓') : '✗') : `${col},${row}`}
+                            </button>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
-          )}
-
-          {!hasPendingShot && !isMyTurn && (isPlayer1 || isPlayer2) && (
-            <p className="text-sm text-gray-600">Opponent&apos;s turn — wait for them to fire.</p>
           )}
         </div>
       )}
