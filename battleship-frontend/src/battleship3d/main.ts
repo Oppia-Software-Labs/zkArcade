@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { setupScene } from '../scene/setupScene';
-import { createGrid, setTileColor, GRID_SIZE, TILE_SIZE } from '../scene/createGrid';
+import { createGrid, setTileColor, setTilePending, GRID_SIZE, TILE_SIZE } from '../scene/createGrid';
 import {
   createShipMeshFromModel,
   positionShipMesh
@@ -27,6 +27,8 @@ export interface ContractModeState {
   iAmDefender?: boolean;
   pendingShotX?: number;
   pendingShotY?: number;
+  /** Local optimistic pending shot the attacker just clicked (col,row). */
+  myPendingShot?: { x: number; y: number } | null;
   /** Keys "x,y" (col,row) for cells hit on my board. */
   resolvedHitsOnMyBoard?: Set<string> | string[];
   /** Keys "x,y" -> { hit, sunkShip } for my shots on opponent. */
@@ -167,27 +169,51 @@ function buildShipPositionsFromShips(): ShipPositions {
 }
 
 function applyContractStateToTiles(): void {
-  if (!contractState.resolvedHitsOnMyBoard && !contractState.myShotsOnOpponent) return;
   const resolvedSet =
     contractState.resolvedHitsOnMyBoard instanceof Set
       ? contractState.resolvedHitsOnMyBoard
       : new Set(contractState.resolvedHitsOnMyBoard ?? []);
+
+  // Player grid (my board): show ships green, resolved hits red/gray,
+  // and any incoming pending shot as amber
   for (let row = 0; row < GRID_SIZE; row++) {
     for (let col = 0; col < GRID_SIZE; col++) {
       const key = `${col},${row}`;
       const hit = resolvedSet.has(key);
       const hasShip = gameState.grid[row][col].hasShip;
-      setTileColor(gameState.grid[row][col].mesh, hit, hasShip);
+
+      const isIncoming =
+        contractState.iAmDefender &&
+        contractState.hasPendingShot &&
+        contractState.pendingShotX === col &&
+        contractState.pendingShotY === row;
+
+      if (isIncoming && !hit) {
+        setTilePending(gameState.grid[row][col].mesh);
+      } else {
+        setTileColor(gameState.grid[row][col].mesh, hit, hasShip, true);
+      }
     }
   }
+
+  // AI grid (opponent's board): resolved shots red/gray,
+  // local pending shot amber
   const myShots = contractState.myShotsOnOpponent ?? {};
+  const pending = contractState.myPendingShot;
   for (let row = 0; row < GRID_SIZE; row++) {
     for (let col = 0; col < GRID_SIZE; col++) {
       const key = `${col},${row}`;
       const result = myShots[key];
       const hit = result !== undefined;
       const hasShip = result?.hit ?? false;
-      setTileColor(gameState.aiGrid[row][col].mesh, hit, hasShip);
+
+      const isPending = pending && pending.x === col && pending.y === row && !hit;
+
+      if (isPending) {
+        setTilePending(gameState.aiGrid[row][col].mesh);
+      } else {
+        setTileColor(gameState.aiGrid[row][col].mesh, hit, hasShip);
+      }
     }
   }
 }
@@ -550,11 +576,26 @@ export function resetPlayerBoard(options?: { showDock?: boolean }): void {
 /**
  * Programmatically restore ship placements on the 3D board.
  * Ships in circuit order: Carrier(5), Battleship(4), Cruiser(3), Submarine(3), Destroyer(2).
- * Removes the ship dock after all ships are placed, then re-applies contract state to
- * update tile colors (so hit/miss markers appear correctly on the restored grid).
+ *
+ * Idempotent: clears any existing ship meshes first, so it's safe to call even when
+ * ships are already present.  After placing, removes the dock and re-applies contract
+ * state so hit/miss markers render correctly.
  */
 export async function restoreShipPlacements(positions: ShipPositions): Promise<void> {
   if (!scene || positions.ship_x.length !== 5) return;
+
+  // Clear existing ships to avoid duplicates
+  for (const ship of gameState.ships) {
+    scene.remove(ship.mesh);
+    disposeObject3D(ship.mesh);
+  }
+  gameState.ships = [];
+  for (const row of gameState.grid) {
+    for (const cell of row) {
+      cell.hasShip = false;
+    }
+  }
+  resetAvailableShips();
 
   const lengths = [5, 4, 3, 3, 2];
   for (let i = 0; i < 5; i++) {
@@ -566,6 +607,7 @@ export async function restoreShipPlacements(positions: ShipPositions): Promise<v
 
     const cells = getShipCells(row, col, length, orientation);
     const mesh = await createShipMeshFromModel(length, orientation);
+    if (!scene) return; // guard in case scene was disposed during async gap
     positionShipMesh(mesh, cells, 0, playerOffsetZ);
     scene.add(mesh);
 
@@ -687,6 +729,7 @@ export function init(container: HTMLElement, options?: InitOptions): InitResult 
         !contractState.hasPendingShot &&
         !(contractState.myShotsOnOpponent && contractState.myShotsOnOpponent[`${tile.col},${tile.row}`])
       ) {
+        setTilePending(gameState.aiGrid[tile.row][tile.col].mesh);
         contractCallbacks.onFire(tile.col, tile.row);
       }
       return;

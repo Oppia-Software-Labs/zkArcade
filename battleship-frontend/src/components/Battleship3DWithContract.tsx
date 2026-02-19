@@ -13,6 +13,7 @@ import {
   generateResolveShotProof,
   type ShipPosition,
 } from '../games/battleship/proofService';
+import { decodeShotBitmap } from '../games/battleship/BattleshipGame';
 import type { Game, GamePhase } from '../games/battleship/bindings';
 import { Buffer } from 'buffer';
 
@@ -86,7 +87,7 @@ export function Battleship3DWithContract() {
   const [myPendingShot, setMyPendingShot] = useState<{ x: number; y: number } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+  const [success, setSuccess] = useState<{ message: string; txHash?: string } | null>(null);
   const [perPlayerUi, setPerPlayerUi] = useState<Record<string, PerPlayerState>>({});
   const prevUserAddressRef = useRef<string>(userAddress);
   const [contractSyncTrigger, setContractSyncTrigger] = useState(0);
@@ -158,6 +159,52 @@ export function Battleship3DWithContract() {
     if (myPendingShot && myPendingShot.x === px && myPendingShot.y === py) setMyPendingShot(null);
   }, [gameState, userAddress, myPendingShot]);
 
+  // Reconstruct resolvedHitsOnMyBoard from blockchain shot bitmap + local board layout.
+  useEffect(() => {
+    if (!gameState || (!isPlayer1 && !isPlayer2)) return;
+    if (!placementFrom3D) return;
+    const blCells = boardLayoutCellsFromPositions(placementFrom3D);
+    if (blCells.length !== 17) return;
+
+    const incomingBitmap = isPlayer1 ? gameState.shots_p2_to_p1 : gameState.shots_p1_to_p2;
+    const incomingShots = decodeShotBitmap(incomingBitmap);
+    if (incomingShots.size === 0) return;
+
+    const shipCellKeys = new Set(blCells.map(c => `${c.x},${c.y}`));
+    setResolvedHitsOnMyBoard(prev => {
+      const merged = new Set(prev);
+      let changed = false;
+      for (const key of incomingShots) {
+        if (shipCellKeys.has(key) && !merged.has(key)) {
+          merged.add(key);
+          changed = true;
+        }
+      }
+      return changed ? merged : prev;
+    });
+  }, [gameState, isPlayer1, isPlayer2, placementFrom3D]);
+
+  // Reconstruct myShotsOnOpponent from blockchain shot bitmap, layering cached hit/miss on top.
+  useEffect(() => {
+    if (!gameState || (!isPlayer1 && !isPlayer2)) return;
+
+    const myBitmap = isPlayer1 ? gameState.shots_p1_to_p2 : gameState.shots_p2_to_p1;
+    const allMyShots = decodeShotBitmap(myBitmap);
+    if (allMyShots.size === 0) return;
+
+    setMyShotsOnOpponent(prev => {
+      let changed = false;
+      const merged = { ...prev };
+      for (const key of allMyShots) {
+        if (merged[key] === undefined) {
+          merged[key] = { hit: false, sunkShip: 0 };
+          changed = true;
+        }
+      }
+      return changed ? merged : prev;
+    });
+  }, [gameState, isPlayer1, isPlayer2]);
+
   // Save outgoing player's UI state and restore incoming player's cached state when switching dev wallets
   useEffect(() => {
     if (prevUserAddressRef.current === userAddress) return;
@@ -188,10 +235,9 @@ export function Battleship3DWithContract() {
 
     const inBattle = gamePhase === 'battle';
 
-    // Reset the 3D board so the new player gets a clean slate.
-    // During battle, skip dock creation — no ships to place.
+    // Don't show dock if we're in battle or the incoming player already committed
     if (initResultRef.current) {
-      resetPlayerBoard({ showDock: !inBattle });
+      resetPlayerBoard({ showDock: !inBattle && !haveICommittedBoard });
     }
 
     if (cachedForNext) {
@@ -203,10 +249,13 @@ export function Battleship3DWithContract() {
       setMyPendingShot(cachedForNext.myPendingShot ? { ...cachedForNext.myPendingShot } : null);
 
       if (cachedForNext.placementFrom3D) {
-        restoreShipPlacements(cachedForNext.placementFrom3D).then(() => {
-          // Force the setContractState effect to re-fire now that grid.hasShip is correct
-          setContractSyncTrigger((c) => c + 1);
-        });
+        restoreShipPlacements(cachedForNext.placementFrom3D)
+          .then(() => {
+            setContractSyncTrigger((c) => c + 1);
+          })
+          .catch((err) => {
+            console.error('Failed to restore ship placements:', err);
+          });
       }
     } else {
       setPlacementFrom3D(null);
@@ -222,17 +271,19 @@ export function Battleship3DWithContract() {
   useEffect(() => {
     const setContractState = initResultRef.current?.setContractState;
     if (!setContractState || gamePhase !== 'battle') return;
+    const effectivePendingShot = hasPendingShot || myPendingShot != null;
     setContractState({
       phase: 'battle',
-      isMyTurn,
-      hasPendingShot,
+      isMyTurn: isMyTurn && !effectivePendingShot,
+      hasPendingShot: effectivePendingShot,
       iAmDefender,
       pendingShotX: gameState?.pending_shot_x,
       pendingShotY: gameState?.pending_shot_y,
+      myPendingShot,
       resolvedHitsOnMyBoard,
       myShotsOnOpponent,
     });
-  }, [gamePhase, isMyTurn, hasPendingShot, iAmDefender, gameState?.pending_shot_x, gameState?.pending_shot_y, resolvedHitsOnMyBoard, myShotsOnOpponent, contractSyncTrigger]);
+  }, [gamePhase, isMyTurn, hasPendingShot, iAmDefender, myPendingShot, gameState?.pending_shot_x, gameState?.pending_shot_y, resolvedHitsOnMyBoard, myShotsOnOpponent, contractSyncTrigger]);
 
   // Init 3D once when we have a container and we're in placement or battle; do not re-init when going placement -> battle.
   // Callbacks use refs to always pick up the latest sessionId/userAddress/signer even after wallet switches.
@@ -251,23 +302,20 @@ export function Battleship3DWithContract() {
       const currentUser = userAddressRef.current;
       const currentSigner = getContractSignerRef.current;
       setMyPendingShot({ x: col, y: row });
-      setLoading(true);
       setError(null);
+      // Fire-and-forget: submit transaction without blocking the UI.
+      // Polling will pick up the result via loadGameState.
       battleshipService
         .fire(currentSession, currentUser, col, row, currentSigner())
-        .then(() => {
-          setSuccess(`Shot at (${col}, ${row}) submitted. Waiting for defender to resolve.`);
-          battleshipService.getGame(currentSession).then((game) => {
-            setGameState(game);
-            if (game) setGamePhase(phaseFromGame(game.phase));
-          });
-          setTimeout(() => setSuccess(null), 3000);
+        .then(({ txHash }) => {
+          setSuccess({ message: `Shot fired at (${col}, ${row}).`, txHash });
+          setTimeout(() => setSuccess(null), 8000);
         })
         .catch((err) => {
+          console.error('fire tx error:', err);
           setMyPendingShot(null);
           setError(err instanceof Error ? err.message : 'Failed to fire');
-        })
-        .finally(() => setLoading(false));
+        });
     };
 
     const result = init(container, {
@@ -343,8 +391,8 @@ export function Battleship3DWithContract() {
       const game = await battleshipService.getGame(sid);
       setGameState(game);
       setGamePhase(game ? phaseFromGame(game.phase) : 'placement');
-      setSuccess('Quickstart complete! Place your ships.');
-      setTimeout(() => setSuccess(null), 3000);
+      setSuccess({ message: 'Quickstart complete! Place your ships.' });
+      setTimeout(() => setSuccess(null), 5000);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Quickstart failed');
     } finally {
@@ -368,8 +416,8 @@ export function Battleship3DWithContract() {
       setGameState(game);
       setLoadSessionId('');
       setGamePhase(phaseFromGame(game.phase));
-      setSuccess('Game loaded.');
-      setTimeout(() => setSuccess(null), 2000);
+      setSuccess({ message: 'Game loaded.' });
+      setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load game');
     } finally {
@@ -386,12 +434,12 @@ export function Battleship3DWithContract() {
         ? BigInt(mySalt)
         : BigInt('0x' + Array.from(crypto.getRandomValues(new Uint8Array(16))).map((b) => b.toString(16).padStart(2, '0')).join(''));
       const commitment = await computeBoardCommitment(placementFrom3D as ShipPosition, salt);
-      await battleshipService.commitBoard(sessionId, userAddress, Buffer.from(commitment), getContractSigner());
+      const { txHash } = await battleshipService.commitBoard(sessionId, userAddress, Buffer.from(commitment), getContractSigner());
       setMyBoardCommitment(commitment);
       setMySalt(salt.toString());
-      setSuccess('Board committed on-chain.');
+      setSuccess({ message: 'Board committed on-chain.', txHash });
       await loadGameState();
-      setTimeout(() => setSuccess(null), 3000);
+      setTimeout(() => setSuccess(null), 8000);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to commit board');
     } finally {
@@ -399,14 +447,32 @@ export function Battleship3DWithContract() {
     }
   };
 
+  const autoResolveInProgressRef = useRef(false);
+  const placementRef = useRef(placementFrom3D);
+  const commitmentRef = useRef(myBoardCommitment);
+  const saltRef = useRef(mySalt);
+  const resolvedHitsRef = useRef(resolvedHitsOnMyBoard);
+  const gameStateRef = useRef(gameState);
+  useEffect(() => { placementRef.current = placementFrom3D; }, [placementFrom3D]);
+  useEffect(() => { commitmentRef.current = myBoardCommitment; }, [myBoardCommitment]);
+  useEffect(() => { saltRef.current = mySalt; }, [mySalt]);
+  useEffect(() => { resolvedHitsRef.current = resolvedHitsOnMyBoard; }, [resolvedHitsOnMyBoard]);
+  useEffect(() => { gameStateRef.current = gameState; }, [gameState]);
+
   const handleResolveShot = async () => {
-    if (!gameState || !placementFrom3D || !myBoardCommitment || !mySalt) return;
-    const shotX = gameState.pending_shot_x;
-    const shotY = gameState.pending_shot_y;
-    const shooter = gameState.pending_shot_shooter;
+    const gs = gameStateRef.current;
+    const placement = placementRef.current;
+    const commitment = commitmentRef.current;
+    const salt = saltRef.current;
+    const hits = resolvedHitsRef.current;
+    if (!gs || !placement || !commitment || !salt) return;
+    if (autoResolveInProgressRef.current) return;
+    const shotX = gs.pending_shot_x;
+    const shotY = gs.pending_shot_y;
+    const shooter = gs.pending_shot_shooter;
     if (shooter == null || shooter === undefined || shooter === '') return;
 
-    const boardLayoutCells = boardLayoutCellsFromPositions(placementFrom3D);
+    const boardLayoutCells = boardLayoutCellsFromPositions(placement);
     if (boardLayoutCells.length !== 17) return;
     const hitCellIndex = boardLayoutCells.findIndex((c) => c.x === shotX && c.y === shotY);
     const isHit = hitCellIndex >= 0;
@@ -416,56 +482,71 @@ export function Battleship3DWithContract() {
       const shipStart = [0, 5, 9, 12, 15][shipIndex];
       const shipLen = SHIP_LENGTHS[shipIndex];
       const shipCells = boardLayoutCells.slice(shipStart, shipStart + shipLen);
-      const hitsIncludingThis = new Set(resolvedHitsOnMyBoard);
+      const hitsIncludingThis = new Set(hits);
       hitsIncludingThis.add(`${shotX},${shotY}`);
       if (shipCells.every((c) => hitsIncludingThis.has(`${c.x},${c.y}`))) sunkShip = shipIndex + 1;
     }
 
+    autoResolveInProgressRef.current = true;
     setLoading(true);
     setError(null);
+    setSuccess({ message: 'Generating ZK proof & resolving shot...' });
     try {
+      const currentSession = sessionIdRef.current;
+      const currentUser = userAddressRef.current;
+      const currentSigner = getContractSignerRef.current;
       const publicInputsHash = await battleshipService.buildPublicInputsHash(
-        sessionId,
-        userAddress,
+        currentSession,
+        currentUser,
         shooter,
         shotX,
         shotY,
         isHit,
         sunkShip,
-        Buffer.from(myBoardCommitment)
+        Buffer.from(commitment)
       );
-      const priorHits = boardLayoutCells.map((c) => (resolvedHitsOnMyBoard.has(`${c.x},${c.y}`) ? 1 : 0));
+      const priorHits = boardLayoutCells.map((c) => (hits.has(`${c.x},${c.y}`) ? 1 : 0));
       const witnessInput = buildResolveShotInput(
-        placementFrom3D as ShipPosition,
-        mySalt,
+        placement as ShipPosition,
+        salt,
         priorHits,
         shotX,
         shotY,
         isHit ? 1 : 0,
         sunkShip,
-        myBoardCommitment,
+        commitment,
         new Uint8Array(publicInputsHash)
       );
       const proofPayload = await generateResolveShotProof(witnessInput);
-      await battleshipService.resolveShot(
-        sessionId,
-        userAddress,
+      const { txHash } = await battleshipService.resolveShot(
+        currentSession,
+        currentUser,
         isHit,
         sunkShip,
         Buffer.from(proofPayload),
         publicInputsHash,
-        getContractSigner()
+        currentSigner()
       );
       if (isHit) setResolvedHitsOnMyBoard((prev) => new Set(prev).add(`${shotX},${shotY}`));
-      setSuccess(isHit ? (sunkShip ? 'Hit! Ship sunk.' : 'Hit!') : 'Miss.');
+      const msg = isHit ? (sunkShip ? 'Hit! Ship sunk.' : 'Hit!') : 'Miss.';
+      setSuccess({ message: `Resolved: ${msg}`, txHash });
       await loadGameState();
-      setTimeout(() => setSuccess(null), 3000);
+      setTimeout(() => setSuccess(null), 8000);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to resolve shot');
     } finally {
       setLoading(false);
+      autoResolveInProgressRef.current = false;
     }
   };
+
+  // Auto-resolve: when the defender switches in and a pending shot exists, resolve automatically
+  useEffect(() => {
+    if (!iAmDefender || !hasPendingShot) return;
+    if (!placementFrom3D || !myBoardCommitment || !mySalt) return;
+    if (autoResolveInProgressRef.current) return;
+    handleResolveShot();
+  }, [iAmDefender, hasPendingShot, placementFrom3D, myBoardCommitment, mySalt]);
 
   return (
     <Layout title="Battleship 3D" subtitle="Two-player on-chain">
@@ -477,7 +558,20 @@ export function Battleship3DWithContract() {
         )}
         {success && (
           <div className="notice info" style={{ marginBottom: 8 }}>
-            {success}
+            {success.message}
+            {success.txHash && (
+              <>
+                {' '}
+                <a
+                  href={`https://stellar.expert/explorer/testnet/tx/${success.txHash}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ color: '#2563eb', textDecoration: 'underline', fontWeight: 600 }}
+                >
+                  View on Stellar Expert
+                </a>
+              </>
+            )}
           </div>
         )}
 
@@ -625,17 +719,12 @@ export function Battleship3DWithContract() {
                   </div>
 
                   {hasPendingShot && iAmDefender && (
-                    <button
-                      type="button"
-                      onClick={handleResolveShot}
-                      disabled={loading || !myBoardCommitment}
-                      className="btn primary"
-                    >
-                      {loading ? 'Generating proof...' : 'Resolve shot (proof + submit)'}
-                    </button>
+                    <p className="text-sm" style={{ color: '#92400e', fontWeight: 600 }}>
+                      {loading ? 'Generating ZK proof & resolving...' : 'Auto-resolving incoming shot...'}
+                    </p>
                   )}
                   {hasPendingShot && !iAmDefender && (
-                    <p className="text-sm" style={{ color: '#92400e' }}>Waiting for defender to resolve your shot.</p>
+                    <p className="text-sm" style={{ color: '#1d4ed8' }}>Shot submitted. Switch wallets to resolve as defender.</p>
                   )}
                   {!hasPendingShot && isMyTurn && (
                     <p className="text-sm" style={{ color: '#1d4ed8', fontWeight: 600 }}>Your turn — click the opponent&apos;s grid (right) to fire.</p>

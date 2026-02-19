@@ -28,6 +28,22 @@ const createRandomSessionId = (): number => {
   return (Math.floor(Math.random() * 0xffffffff) >>> 0) || 1;
 };
 
+/**
+ * Decode a u128 shot bitmap from the contract into a set of "x,y" coordinate strings.
+ * Bit index = y * 10 + x, so each set bit maps to one cell on the 10x10 grid.
+ */
+export function decodeShotBitmap(bitmap: bigint | number): Set<string> {
+  const shots = new Set<string>();
+  const val = BigInt(bitmap);
+  for (let y = 0; y < GRID_SIZE; y++) {
+    for (let x = 0; x < GRID_SIZE; x++) {
+      const bit = BigInt(1) << BigInt(y * GRID_SIZE + x);
+      if (val & bit) shots.add(`${x},${y}`);
+    }
+  }
+  return shots;
+}
+
 // Create service instance with the contract ID
 const battleshipService = new BattleshipService(BATTLESHIP_CONTRACT);
 
@@ -985,6 +1001,54 @@ export function BattleshipGame({
     return out.length === 17 ? out : [];
   }, [placementShips]);
 
+  // Reconstruct resolvedHitsOnMyBoard from blockchain shot bitmap + local board layout.
+  // The defender knows their own ship positions, so incoming-shot-bitmap ∩ ship-cells = hits.
+  useEffect(() => {
+    if (!gameState || (!isPlayer1 && !isPlayer2)) return;
+    if (boardLayoutCells.length !== 17) return;
+
+    const incomingBitmap = isPlayer1 ? gameState.shots_p2_to_p1 : gameState.shots_p1_to_p2;
+    const incomingShots = decodeShotBitmap(incomingBitmap);
+    if (incomingShots.size === 0) return;
+
+    const shipCellKeys = new Set(boardLayoutCells.map(c => `${c.x},${c.y}`));
+    setResolvedHitsOnMyBoard(prev => {
+      const merged = new Set(prev);
+      let changed = false;
+      for (const key of incomingShots) {
+        if (shipCellKeys.has(key) && !merged.has(key)) {
+          merged.add(key);
+          changed = true;
+        }
+      }
+      return changed ? merged : prev;
+    });
+  }, [gameState, isPlayer1, isPlayer2, boardLayoutCells]);
+
+  // Reconstruct myShotsOnOpponent from blockchain shot bitmap, layering cached hit/miss on top.
+  // The bitmap provides the complete set of cells fired at. For cells absent from local cache
+  // (e.g. lost during player switch), default to miss — this prevents double-firing and shows a
+  // "shot fired" marker. Actual hit/miss data from the cache takes priority when present.
+  useEffect(() => {
+    if (!gameState || (!isPlayer1 && !isPlayer2)) return;
+
+    const myBitmap = isPlayer1 ? gameState.shots_p1_to_p2 : gameState.shots_p2_to_p1;
+    const allMyShots = decodeShotBitmap(myBitmap);
+    if (allMyShots.size === 0) return;
+
+    setMyShotsOnOpponent(prev => {
+      let changed = false;
+      const merged = { ...prev };
+      for (const key of allMyShots) {
+        if (merged[key] === undefined) {
+          merged[key] = { hit: false, sunkShip: 0 };
+          changed = true;
+        }
+      }
+      return changed ? merged : prev;
+    });
+  }, [gameState, isPlayer1, isPlayer2]);
+
   const handleFire = async (x: number, y: number) => {
     await runAction(async () => {
       try {
@@ -1062,7 +1126,7 @@ export function BattleshipGame({
         );
         const proofPayload = await generateResolveShotProof(witnessInput);
         const signer = getContractSigner();
-        const result = await battleshipService.resolveShot(
+        const { result } = await battleshipService.resolveShot(
           sessionId,
           userAddress,
           isHit,

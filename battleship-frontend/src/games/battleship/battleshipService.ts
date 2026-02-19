@@ -614,6 +614,7 @@ export class BattleshipService {
 
   /**
    * Fire at (x, y) on the opponent's board. Caller is the shooter.
+   * Returns result and transaction hash for Explorer link.
    */
   async fire(
     sessionId: number,
@@ -622,7 +623,7 @@ export class BattleshipService {
     y: number,
     signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>,
     authTtlMinutes?: number
-  ) {
+  ): Promise<{ result: any; txHash: string | undefined }> {
     const client = this.createSigningClient(shooterAddress, signer);
     const tx = await client.fire({
       session_id: sessionId,
@@ -640,12 +641,16 @@ export class BattleshipService {
       const errorMessage = this.extractErrorFromDiagnostics(sentTx.getTransactionResponse);
       throw new Error(`Transaction failed: ${errorMessage}`);
     }
-    return sentTx.result;
+    const txHash =
+      (sentTx as { sendTransactionResponse?: { hash?: string } }).sendTransactionResponse?.hash ??
+      (sentTx.getTransactionResponse as { txHash?: string } | undefined)?.txHash;
+    return { result: sentTx.result, txHash };
   }
 
   /**
    * Resolve the pending shot with a ZK proof. Caller is the defender (owner of the board that was shot).
    * sunk_ship: 0 = none, 1 = Carrier, 2 = Battleship, 3 = Cruiser, 4 = Submarine, 5 = Destroyer.
+   * Returns result and transaction hash for Explorer link.
    */
   async resolveShot(
     sessionId: number,
@@ -656,7 +661,7 @@ export class BattleshipService {
     publicInputsHash: Buffer,
     signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>,
     authTtlMinutes?: number
-  ) {
+  ): Promise<{ result: any; txHash: string | undefined }> {
     const client = this.createSigningClient(defenderAddress, signer);
     const tx = await client.resolve_shot({
       session_id: sessionId,
@@ -680,7 +685,10 @@ export class BattleshipService {
     if (!result || !result.isOk()) {
       throw new Error('resolve_shot returned an error');
     }
-    return result.unwrap();
+    const txHash =
+      (sentTx as { sendTransactionResponse?: { hash?: string } }).sendTransactionResponse?.hash ??
+      (sentTx.getTransactionResponse as { txHash?: string } | undefined)?.txHash;
+    return { result: result.unwrap(), txHash };
   }
 
   /**

@@ -8,6 +8,8 @@ const GAP = 0.04;
 const BLUE = 0x2563eb;
 const RED = 0xc41e3a;
 const GRAY = 0x6b7280;
+const GREEN = 0x16a34a;
+const PENDING = 0xf59e0b;
 
 /**
  * Creates a 10x10 Battleship grid of clickable tiles.
@@ -66,17 +68,29 @@ export function createGrid(
 }
 
 /**
- * Update tile color for hit (red) or miss (gray).
+ * Update tile color.
+ * @param showShip — if true, un-hit tiles with ships render green (player's own grid)
  */
 export function setTileColor(
   mesh: THREE.Mesh,
   hit: boolean,
-  hasShip: boolean
+  hasShip: boolean,
+  showShip = false
 ): void {
   const mat = mesh.material as THREE.MeshStandardMaterial;
   if (hit) {
     mat.color.setHex(hasShip ? RED : GRAY);
+  } else if (showShip && hasShip) {
+    mat.color.setHex(GREEN);
   } else {
     mat.color.setHex(BLUE);
   }
+}
+
+/**
+ * Mark a tile as "pending shot" (amber). Used for optimistic UI on click.
+ */
+export function setTilePending(mesh: THREE.Mesh): void {
+  const mat = mesh.material as THREE.MeshStandardMaterial;
+  mat.color.setHex(PENDING);
 }
