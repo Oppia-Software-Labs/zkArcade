@@ -93,6 +93,11 @@ impl BattleshipContract {
             sunk_ships_on_p1: 0,
             sunk_ships_on_p2: 0,
             winner: None,
+            last_resolved_shooter: None,
+            last_resolved_x: 0,
+            last_resolved_y: 0,
+            last_resolved_is_hit: false,
+            last_resolved_sunk_ship: 0,
         };
 
         save_game(&env, &key, &game);
@@ -179,6 +184,13 @@ impl BattleshipContract {
         } else {
             return Err(Error::NotPlayer);
         }
+
+        // Clear last resolved so only the most recent resolve is visible to shooter.
+        game.last_resolved_shooter = None;
+        game.last_resolved_x = 0;
+        game.last_resolved_y = 0;
+        game.last_resolved_is_hit = false;
+        game.last_resolved_sunk_ship = 0;
 
         game.pending_shot_shooter = Some(shooter);
         game.pending_shot_x = x;
@@ -331,11 +343,18 @@ impl BattleshipContract {
             game.phase = GamePhase::Ended;
             game.winner = Some(shooter.clone());
             game.turn = None;
-            winner = Some(shooter);
+            winner = Some(shooter.clone());
         } else {
             game.turn = Some(defender.clone());
             next_turn = Some(defender);
         }
+
+        // Expose last resolved shot so shooter can learn result from get_game().
+        game.last_resolved_shooter = Some(shooter.clone());
+        game.last_resolved_x = shot_x;
+        game.last_resolved_y = shot_y;
+        game.last_resolved_is_hit = is_hit;
+        game.last_resolved_sunk_ship = sunk_ship;
 
         game.pending_shot_shooter = None;
         save_game(&env, &key, &game);

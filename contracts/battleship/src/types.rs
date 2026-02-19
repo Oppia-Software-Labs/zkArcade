@@ -63,4 +63,10 @@ pub struct Game {
     pub sunk_ships_on_p1: u32,
     pub sunk_ships_on_p2: u32,
     pub winner: Option<Address>,
+    // Last resolved shot so shooter can learn hit/miss from get_game().
+    pub last_resolved_shooter: Option<Address>,
+    pub last_resolved_x: u32,
+    pub last_resolved_y: u32,
+    pub last_resolved_is_hit: bool,
+    pub last_resolved_sunk_ship: u32,
 }
