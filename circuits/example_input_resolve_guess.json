@@ -1,0 +1,11 @@
+{
+  "word": [7, 4, 11, 11, 14],
+  "salt": "12345678901234567890",
+  "guess": [7, 4, 0, 11, 14],
+  "feedback": [2, 2, 0, 2, 2],
+  "is_correct": 0,
+  "word_commitment_hi": "0",
+  "word_commitment_lo": "0",
+  "public_inputs_hash_hi": "0",
+  "public_inputs_hash_lo": "0"
+}
