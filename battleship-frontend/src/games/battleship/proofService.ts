@@ -129,8 +129,11 @@ export async function computeBoardCommitment(
     salt: saltStr,
   };
   const witness = await wc.calculateWitness(input, 0);
-  // Last witness element is the single output: board_commitment
-  const commitmentField = witness[witness.length - 1];
+  // #region agent log
+  const _wcDbg={witnessLen:witness.length,witness1:witness[1]?.toString(),witnessLast:witness[witness.length-1]?.toString(),same:witness[1]===witness[witness.length-1]};console.warn('[DBG:computeBoardCommitment]',_wcDbg);fetch('http://127.0.0.1:7246/ingest/698c3a6d-203c-4b30-9d53-445256ecd091',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'proofService.ts:computeBoardCommitment',message:'witness values',data:{witnessLen:witness.length,witness1:witness[1]?.toString(),witnessLast:witness[witness.length-1]?.toString(),same:String(witness[1]===witness[witness.length-1])},timestamp:Date.now(),hypothesisId:'WITNESS'})}).catch(()=>{});
+  // #endregion
+  // Circom witness: [1, outputs..., inputs..., intermediates...]. Output is at index 1.
+  const commitmentField = witness[1];
   if (commitmentField == null) throw new Error("Board commitment witness output missing");
   return bigIntToBytes32(commitmentField);
 }
@@ -246,13 +249,14 @@ function serializeAdapterPayload(
     offset += G1_BYTES;
   };
   const writeG2 = (p: bigint[][]) => {
-    // G2: two Fp2 elements (x, y). Each Fp2 = (c0, c1). Order for Soroban: typically x_c0, x_c1, y_c0, y_c1
-    const [x0, x1] = p[0];
-    const [y0, y1] = p[1];
-    out.set(bigIntToBytes32(x0), offset);
-    out.set(bigIntToBytes32(x1), offset + 32);
-    out.set(bigIntToBytes32(y0), offset + 64);
-    out.set(bigIntToBytes32(y1), offset + 96);
+    // G2: Soroban BN254 expects be_bytes(X)||be_bytes(Y), each Fp2 as be_bytes(c1)||be_bytes(c0) (c0=real, c1=imag).
+    // snarkjs pi_b is [[x_c0, x_c1], [y_c0, y_c1]], so we swap each pair to encode Soroban's (c1, c0) layout.
+    const [x_c0, x_c1] = p[0];
+    const [y_c0, y_c1] = p[1];
+    out.set(bigIntToBytes32(x_c1), offset);       // c1 (imag)
+    out.set(bigIntToBytes32(x_c0), offset + 32);  // c0 (real)
+    out.set(bigIntToBytes32(y_c1), offset + 64);
+    out.set(bigIntToBytes32(y_c0), offset + 96);
     offset += G2_BYTES;
   };
 
