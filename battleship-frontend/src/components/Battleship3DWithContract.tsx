@@ -56,6 +56,28 @@ interface SerializedPerPlayerState {
   myPendingShot: { x: number; y: number } | null;
 }
 
+/** Unwrap Option<Buffer> from contract (tag/values or raw Buffer). */
+function unwrapOptionBuffer(opt: Game['board_commitment_p1']): Buffer | null {
+  if (opt == null || opt === undefined) return null;
+  if (Buffer.isBuffer(opt)) return opt;
+  const o = opt as { tag?: string; values?: unknown[] };
+  if (o.tag === 'Some' && Array.isArray(o.values) && o.values[0] != null && Buffer.isBuffer(o.values[0])) {
+    return o.values[0] as Buffer;
+  }
+  return null;
+}
+
+/** Unwrap Option<string> from contract (tag/values or raw string). */
+function unwrapOptionString(opt: Game['pending_shot_shooter']): string | null {
+  if (opt == null || opt === undefined) return null;
+  if (typeof opt === 'string') return opt;
+  const o = opt as { tag?: string; values?: unknown[] };
+  if (o.tag === 'Some' && Array.isArray(o.values) && o.values[0] != null && typeof o.values[0] === 'string') {
+    return o.values[0] as string;
+  }
+  return null;
+}
+
 function serializePerPlayerUi3D(map: Record<string, PerPlayerState>): Record<string, SerializedPerPlayerState> {
   const out: Record<string, SerializedPerPlayerState> = {};
   for (const [key, val] of Object.entries(map)) {
@@ -107,7 +129,7 @@ function boardLayoutCellsFromPositions(positions: ShipPositions): { x: number; y
 export function Battleship3DWithContract() {
   const containerRef = useRef<HTMLDivElement>(null);
   const initResultRef = useRef<ReturnType<typeof init> | null>(null);
-  const { getContractSigner, walletType, publicKey } = useWallet();
+  const { getContractSigner, walletType, publicKey, switchPlayer, getCurrentDevPlayer, isConnecting } = useWallet();
   const userAddress = publicKey ?? '';
   const [sessionId, setSessionId] = useState(() => createRandomSessionId());
   const [gameState, setGameState] = useState<Game | null>(null);
@@ -130,9 +152,11 @@ export function Battleship3DWithContract() {
     } catch { /* ignore corrupt data */ }
     return {};
   });
+  const perPlayerUiRef = useRef(perPlayerUi);
   const prevUserAddressRef = useRef<string>(userAddress);
   const [contractSyncTrigger, setContractSyncTrigger] = useState(0);
   const playerSwitchPendingRef = useRef(false);
+  const restoreTokenRef = useRef(0);
 
   // Persist perPlayerUi to sessionStorage whenever it changes
   useEffect(() => {
@@ -145,6 +169,7 @@ export function Battleship3DWithContract() {
       }
     } catch { /* sessionStorage full or unavailable */ }
   }, [perPlayerUi]);
+  useEffect(() => { perPlayerUiRef.current = perPlayerUi; }, [perPlayerUi]);
 
   const sessionIdRef = useRef(sessionId);
   const userAddressRef = useRef(userAddress);
@@ -153,14 +178,12 @@ export function Battleship3DWithContract() {
   useEffect(() => { userAddressRef.current = userAddress; }, [userAddress]);
   useEffect(() => { getContractSignerRef.current = getContractSigner; }, [getContractSigner]);
 
-  const isPlayer1 = gameState && gameState.player1 === userAddress;
-  const isPlayer2 = gameState && gameState.player2 === userAddress;
+  const isPlayer1 = !!gameState && gameState.player1 === userAddress;
+  const isPlayer2 = !!gameState && gameState.player2 === userAddress;
+  const pendingShotShooter = gameState ? unwrapOptionString(gameState.pending_shot_shooter) : null;
   const isMyTurn = gameState?.turn != null && gameState.turn !== '' && gameState.turn === userAddress;
-  const hasPendingShot =
-    gameState?.pending_shot_shooter != null &&
-    gameState?.pending_shot_shooter !== undefined &&
-    gameState?.pending_shot_shooter !== '';
-  const iAmDefender = hasPendingShot && gameState?.pending_shot_shooter !== userAddress;
+  const hasPendingShot = pendingShotShooter != null && pendingShotShooter !== '';
+  const iAmDefender = hasPendingShot && pendingShotShooter !== userAddress;
   const quickstartAvailable =
     walletType === 'dev' &&
     DevWalletService.isDevModeAvailable() &&
@@ -169,10 +192,17 @@ export function Battleship3DWithContract() {
 
   const haveICommittedBoard = useMemo(() => {
     if (!gameState) return false;
-    if (isPlayer1 && gameState.board_commitment_p1 != null && gameState.board_commitment_p1 !== undefined) return true;
-    if (isPlayer2 && gameState.board_commitment_p2 != null && gameState.board_commitment_p2 !== undefined) return true;
+    if (isPlayer1 && unwrapOptionBuffer(gameState.board_commitment_p1) != null) return true;
+    if (isPlayer2 && unwrapOptionBuffer(gameState.board_commitment_p2) != null) return true;
     return false;
   }, [gameState, isPlayer1, isPlayer2]);
+  const fireStatusLabel = hasPendingShot
+    ? iAmDefender
+      ? 'Waiting for defender resolve'
+      : 'Shot submitted - switch wallet'
+    : isMyTurn
+      ? 'Ready to fire'
+      : 'Opponent turn';
 
   const loadGameState = async () => {
     try {
@@ -195,10 +225,7 @@ export function Battleship3DWithContract() {
   // Apply last_resolved_* for shooter
   useEffect(() => {
     if (!gameState || !userAddress) return;
-    const noPending =
-      gameState.pending_shot_shooter == null ||
-      gameState.pending_shot_shooter === undefined ||
-      gameState.pending_shot_shooter === '';
+    const noPending = unwrapOptionString(gameState.pending_shot_shooter) == null;
     if (!noPending) return;
     const lr = gameState.last_resolved_shooter;
     const isMe = lr != null && lr !== undefined && lr !== '' && lr === userAddress;
@@ -269,19 +296,23 @@ export function Battleship3DWithContract() {
 
     const prevKey = `${sessionId}:${prevUserAddressRef.current}`;
     const nextKey = `${sessionId}:${userAddress}`;
+    const cachedForNext: PerPlayerState | undefined = perPlayerUiRef.current[nextKey];
+    const thisRestoreToken = ++restoreTokenRef.current;
+    const outgoingSnapshot: PerPlayerState = {
+      placementFrom3D: placementRef.current ? { ...placementRef.current } : null,
+      mySalt: saltRef.current,
+      myBoardCommitment: commitmentRef.current ? new Uint8Array(commitmentRef.current) : null,
+      resolvedHitsOnMyBoard: new Set(resolvedHitsRef.current),
+      myShotsOnOpponent: { ...myShotsOnOpponentRef.current },
+      myPendingShot: myPendingShotRef.current ? { ...myPendingShotRef.current } : null,
+    };
+    // #region agent log
+    fetch('http://127.0.0.1:7246/ingest/698c3a6d-203c-4b30-9d53-445256ecd091',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8199f0'},body:JSON.stringify({sessionId:'8199f0',runId:'post-fix-1',hypothesisId:'A',location:'Battleship3DWithContract.tsx:walletSwitch:entry',message:'wallet switch detected',data:{sessionId,prevUser:prevUserAddressRef.current,nextUser:userAddress,prevKey,nextKey,hasCachedNext:!!cachedForNext,cachedHasPlacement:!!cachedForNext?.placementFrom3D,cachedHasSalt:!!cachedForNext?.mySalt,cachedHasCommitment:!!cachedForNext?.myBoardCommitment,outgoingHasPlacement:!!outgoingSnapshot.placementFrom3D,outgoingHasSalt:!!outgoingSnapshot.mySalt,outgoingHasCommitment:!!outgoingSnapshot.myBoardCommitment,gamePhase},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
 
-    let cachedForNext: PerPlayerState | undefined;
     setPerPlayerUi((prev) => {
       const updated = { ...prev };
-      updated[prevKey] = {
-        placementFrom3D: placementRef.current ? { ...placementRef.current } : null,
-        mySalt: saltRef.current,
-        myBoardCommitment: commitmentRef.current ? new Uint8Array(commitmentRef.current) : null,
-        resolvedHitsOnMyBoard: new Set(resolvedHitsRef.current),
-        myShotsOnOpponent: { ...myShotsOnOpponentRef.current },
-        myPendingShot: myPendingShotRef.current ? { ...myPendingShotRef.current } : null,
-      };
-      cachedForNext = updated[nextKey];
+      updated[prevKey] = outgoingSnapshot;
       return updated;
     });
 
@@ -289,69 +320,89 @@ export function Battleship3DWithContract() {
 
     const inBattle = gamePhase === 'battle';
 
-    // Don't show dock if we're in battle or the incoming player already committed
-    if (initResultRef.current) {
-      resetPlayerBoard({ showDock: !inBattle && !haveICommittedBoard });
-    }
-
     // Prevent the sync effect from overwriting with stale outgoing-player
-    // data during this render (React state updates are batched).
+    // data while incoming player state is being restored.
     playerSwitchPendingRef.current = true;
 
-    if (cachedForNext) {
-      setPlacementFrom3D(cachedForNext.placementFrom3D);
-      setMySalt(cachedForNext.mySalt);
-      setMyBoardCommitment(cachedForNext.myBoardCommitment ? new Uint8Array(cachedForNext.myBoardCommitment) : null);
-      setResolvedHitsOnMyBoard(new Set(cachedForNext.resolvedHitsOnMyBoard));
-      setMyShotsOnOpponent({ ...cachedForNext.myShotsOnOpponent });
-      setMyPendingShot(cachedForNext.myPendingShot ? { ...cachedForNext.myPendingShot } : null);
+    const nextPlacement = cachedForNext?.placementFrom3D ?? null;
+    if (nextPlacement) {
+      const cached = cachedForNext as PerPlayerState;
+      placementRef.current = nextPlacement;
+      saltRef.current = cached.mySalt;
+      commitmentRef.current = cached.myBoardCommitment ? new Uint8Array(cached.myBoardCommitment) : null;
+      resolvedHitsRef.current = new Set(cached.resolvedHitsOnMyBoard);
+      myShotsOnOpponentRef.current = { ...cached.myShotsOnOpponent };
+      myPendingShotRef.current = cached.myPendingShot ? { ...cached.myPendingShot } : null;
+      setPlacementFrom3D(nextPlacement);
+      setMySalt(cached.mySalt);
+      setMyBoardCommitment(cached.myBoardCommitment ? new Uint8Array(cached.myBoardCommitment) : null);
+      setResolvedHitsOnMyBoard(new Set(cached.resolvedHitsOnMyBoard));
+      setMyShotsOnOpponent({ ...cached.myShotsOnOpponent });
+      setMyPendingShot(cached.myPendingShot ? { ...cached.myPendingShot } : null);
 
-      if (cachedForNext.placementFrom3D) {
-        const cached = cachedForNext;
-        restoreShipPlacements(cached.placementFrom3D!)
-          .then(() => {
-            // Push the incoming player's hit/shot state into the 3D module
-            // immediately after ship restoration so applyContractStateToTiles
-            // paints the correct colors. Without this, the module still holds
-            // the outgoing player's data (React state updates are batched).
-            const setCS = initResultRef.current?.setContractState;
-            if (setCS && gamePhase === 'battle') {
-              const effectivePending = hasPendingShot || cached.myPendingShot != null;
-              setCS({
-                phase: 'battle',
-                isMyTurn: isMyTurn && !effectivePending,
-                hasPendingShot: effectivePending,
-                iAmDefender,
-                pendingShotX: gameState?.pending_shot_x,
-                pendingShotY: gameState?.pending_shot_y,
-                myPendingShot: cached.myPendingShot,
-                resolvedHitsOnMyBoard: new Set(cached.resolvedHitsOnMyBoard),
-                myShotsOnOpponent: { ...cached.myShotsOnOpponent },
-              });
-            }
-            setContractSyncTrigger((c) => c + 1);
-          })
-          .catch((err) => {
-            console.error('Failed to restore ship placements:', err);
-          });
-      }
+      restoreShipPlacements(nextPlacement)
+        .then(() => {
+          // #region agent log
+          fetch('http://127.0.0.1:7246/ingest/698c3a6d-203c-4b30-9d53-445256ecd091',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8199f0'},body:JSON.stringify({sessionId:'8199f0',runId:'pre-fix-1',hypothesisId:'B',location:'Battleship3DWithContract.tsx:walletSwitch:restore:then',message:'restoreShipPlacements resolved',data:{thisRestoreToken,currentRestoreToken:restoreTokenRef.current,nextUser:userAddress,hasPlacement:!!nextPlacement},timestamp:Date.now()})}).catch(()=>{});
+          // #endregion
+          if (restoreTokenRef.current !== thisRestoreToken) return;
+          playerSwitchPendingRef.current = false;
+          // Re-apply contract state after ship meshes are fully restored.
+          setContractSyncTrigger((c) => c + 1);
+        })
+        .catch((err) => {
+          // #region agent log
+          fetch('http://127.0.0.1:7246/ingest/698c3a6d-203c-4b30-9d53-445256ecd091',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8199f0'},body:JSON.stringify({sessionId:'8199f0',runId:'pre-fix-1',hypothesisId:'B',location:'Battleship3DWithContract.tsx:walletSwitch:restore:catch',message:'restoreShipPlacements failed',data:{thisRestoreToken,currentRestoreToken:restoreTokenRef.current,error:err instanceof Error ? err.message : String(err)},timestamp:Date.now()})}).catch(()=>{});
+          // #endregion
+          if (restoreTokenRef.current !== thisRestoreToken) return;
+          console.error('Failed to restore ship placements:', err);
+          playerSwitchPendingRef.current = false;
+          setError('Failed to restore ship placements for this player.');
+        });
     } else {
-      setPlacementFrom3D(null);
-      setMySalt('');
-      setMyBoardCommitment(null);
-      setResolvedHitsOnMyBoard(new Set());
-      setMyShotsOnOpponent({});
-      setMyPendingShot(null);
+      // #region agent log
+      fetch('http://127.0.0.1:7246/ingest/698c3a6d-203c-4b30-9d53-445256ecd091',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8199f0'},body:JSON.stringify({sessionId:'8199f0',runId:'pre-fix-1',hypothesisId:'A',location:'Battleship3DWithContract.tsx:walletSwitch:noPlacement',message:'no placement to restore for incoming player',data:{nextUser:userAddress,hasCachedNext:!!cachedForNext,cachedKeys:cachedForNext ? Object.keys(cachedForNext) : []},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      // Only clear board visuals if there is no cached placement for incoming player.
+      if (initResultRef.current) {
+        resetPlayerBoard({ showDock: !inBattle && !haveICommittedBoard });
+      }
+      if (cachedForNext) {
+        placementRef.current = cachedForNext.placementFrom3D ? { ...cachedForNext.placementFrom3D } : null;
+        saltRef.current = cachedForNext.mySalt;
+        commitmentRef.current = cachedForNext.myBoardCommitment ? new Uint8Array(cachedForNext.myBoardCommitment) : null;
+        resolvedHitsRef.current = new Set(cachedForNext.resolvedHitsOnMyBoard);
+        myShotsOnOpponentRef.current = { ...cachedForNext.myShotsOnOpponent };
+        myPendingShotRef.current = cachedForNext.myPendingShot ? { ...cachedForNext.myPendingShot } : null;
+        setPlacementFrom3D(cachedForNext.placementFrom3D);
+        setMySalt(cachedForNext.mySalt);
+        setMyBoardCommitment(cachedForNext.myBoardCommitment ? new Uint8Array(cachedForNext.myBoardCommitment) : null);
+        setResolvedHitsOnMyBoard(new Set(cachedForNext.resolvedHitsOnMyBoard));
+        setMyShotsOnOpponent({ ...cachedForNext.myShotsOnOpponent });
+        setMyPendingShot(cachedForNext.myPendingShot ? { ...cachedForNext.myPendingShot } : null);
+      } else {
+        placementRef.current = null;
+        saltRef.current = '';
+        commitmentRef.current = null;
+        resolvedHitsRef.current = new Set();
+        myShotsOnOpponentRef.current = {};
+        myPendingShotRef.current = null;
+        setPlacementFrom3D(null);
+        setMySalt('');
+        setMyBoardCommitment(null);
+        setResolvedHitsOnMyBoard(new Set());
+        setMyShotsOnOpponent({});
+        setMyPendingShot(null);
+      }
+      playerSwitchPendingRef.current = false;
+      setContractSyncTrigger((c) => c + 1);
     }
-  }, [userAddress, sessionId]);
+  }, [userAddress, sessionId]); // Intentionally tied to wallet/session switches only.
 
   // Sync contract state into 3D when in battle
   useEffect(() => {
-    // Skip when a player switch just happened: React state still holds
-    // the outgoing player's data. The .then() callback after
-    // restoreShipPlacements and the next render will push correct data.
+    // Skip while player-switch restoration is in progress.
     if (playerSwitchPendingRef.current) {
-      playerSwitchPendingRef.current = false;
       return;
     }
     const setContractState = initResultRef.current?.setContractState;
@@ -379,6 +430,7 @@ export function Battleship3DWithContract() {
     if (initResultRef.current) return;
 
     const handlePlacementComplete = (positions: ShipPositions) => {
+      placementRef.current = positions;
       setPlacementFrom3D(positions);
     };
 
@@ -388,18 +440,20 @@ export function Battleship3DWithContract() {
       const currentSigner = getContractSignerRef.current;
       setMyPendingShot({ x: col, y: row });
       setError(null);
-      // Fire-and-forget: submit transaction without blocking the UI.
-      // Polling will pick up the result via loadGameState.
-      battleshipService
-        .fire(currentSession, currentUser, col, row, currentSigner())
-        .then(({ txHash }) => {
-          setSuccess({ message: `Shot fired at (${col}, ${row}).`, txHash });
+      setLoading(true);
+      battleshipService.fire(currentSession, currentUser, col, row, currentSigner())
+        .then(async ({ txHash }) => {
+          setSuccess({ message: `Shot at (${col}, ${row}) submitted. Waiting for defender to resolve.`, txHash });
+          await loadGameState();
           setTimeout(() => setSuccess(null), 8000);
         })
         .catch((err) => {
           console.error('fire tx error:', err);
           setMyPendingShot(null);
           setError(err instanceof Error ? err.message : 'Failed to fire');
+        })
+        .finally(() => {
+          setLoading(false);
         });
     };
 
@@ -520,6 +574,10 @@ export function Battleship3DWithContract() {
         : BigInt('0x' + Array.from(crypto.getRandomValues(new Uint8Array(16))).map((b) => b.toString(16).padStart(2, '0')).join(''));
       const commitment = await computeBoardCommitment(placementFrom3D as ShipPosition, salt);
       const { txHash } = await battleshipService.commitBoard(sessionId, userAddress, Buffer.from(commitment), getContractSigner());
+      // Sync refs immediately so a rapid wallet switch does not cache stale salt/commitment.
+      placementRef.current = placementFrom3D;
+      saltRef.current = salt.toString();
+      commitmentRef.current = commitment;
       setMyBoardCommitment(commitment);
       setMySalt(salt.toString());
       setSuccess({ message: 'Board committed on-chain.', txHash });
@@ -529,6 +587,24 @@ export function Battleship3DWithContract() {
       setError(err instanceof Error ? err.message : 'Failed to commit board');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSwitchPlayer = async () => {
+    if (walletType !== 'dev') {
+      setError('Switch Player is only available with dev wallets.');
+      return;
+    }
+    const current = getCurrentDevPlayer();
+    if (current !== 1 && current !== 2) {
+      setError('Connect a dev wallet player first.');
+      return;
+    }
+    setError(null);
+    try {
+      await switchPlayer(current === 1 ? 2 : 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to switch player');
     }
   };
 
@@ -548,33 +624,44 @@ export function Battleship3DWithContract() {
   useEffect(() => { myPendingShotRef.current = myPendingShot; }, [myPendingShot]);
   useEffect(() => { gameStateRef.current = gameState; }, [gameState]);
 
+  // Keep current player's state synced so switching/restoring matches 2D behavior.
+  useEffect(() => {
+    if (!userAddress || gamePhase === 'create') return;
+    const key = `${sessionId}:${userAddress}`;
+    const hasState = placementFrom3D != null || mySalt !== '' || myBoardCommitment != null;
+    if (!hasState) return;
+    setPerPlayerUi((prev) => ({
+      ...prev,
+      [key]: {
+        placementFrom3D: placementFrom3D ? { ...placementFrom3D } : null,
+        mySalt,
+        myBoardCommitment: myBoardCommitment ? new Uint8Array(myBoardCommitment) : null,
+        resolvedHitsOnMyBoard: new Set(resolvedHitsOnMyBoard),
+        myShotsOnOpponent: { ...myShotsOnOpponent },
+        myPendingShot: myPendingShot ? { ...myPendingShot } : null,
+      },
+    }));
+  }, [
+    userAddress,
+    sessionId,
+    gamePhase,
+    placementFrom3D,
+    mySalt,
+    myBoardCommitment,
+    resolvedHitsOnMyBoard,
+    myShotsOnOpponent,
+    myPendingShot,
+  ]);
+
   const handleResolveShot = async () => {
-    const gs = gameStateRef.current;
     const placement = placementRef.current;
-    const commitment = commitmentRef.current;
     const salt = saltRef.current;
     const hits = resolvedHitsRef.current;
-    if (!gs || !placement || !commitment || !salt) return;
+    // #region agent log
+    fetch('http://127.0.0.1:7246/ingest/698c3a6d-203c-4b30-9d53-445256ecd091',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8199f0'},body:JSON.stringify({sessionId:'8199f0',runId:'pre-fix-1',hypothesisId:'C',location:'Battleship3DWithContract.tsx:handleResolveShot:entry',message:'handleResolveShot entered',data:{hasPlacement:!!placement,hasSalt:!!salt,hitsCount:hits.size,autoResolveInProgress:autoResolveInProgressRef.current,userAddress:userAddressRef.current,sessionId:sessionIdRef.current},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    if (!placement || !salt) return;
     if (autoResolveInProgressRef.current) return;
-    const shotX = gs.pending_shot_x;
-    const shotY = gs.pending_shot_y;
-    const shooter = gs.pending_shot_shooter;
-    if (shooter == null || shooter === undefined || shooter === '') return;
-
-    const boardLayoutCells = boardLayoutCellsFromPositions(placement);
-    if (boardLayoutCells.length !== 17) return;
-    const hitCellIndex = boardLayoutCells.findIndex((c) => c.x === shotX && c.y === shotY);
-    const isHit = hitCellIndex >= 0;
-    let sunkShip = 0;
-    if (isHit) {
-      const shipIndex = hitCellIndex < 5 ? 0 : hitCellIndex < 9 ? 1 : hitCellIndex < 12 ? 2 : hitCellIndex < 15 ? 3 : 4;
-      const shipStart = [0, 5, 9, 12, 15][shipIndex];
-      const shipLen = SHIP_LENGTHS[shipIndex];
-      const shipCells = boardLayoutCells.slice(shipStart, shipStart + shipLen);
-      const hitsIncludingThis = new Set(hits);
-      hitsIncludingThis.add(`${shotX},${shotY}`);
-      if (shipCells.every((c) => hitsIncludingThis.has(`${c.x},${c.y}`))) sunkShip = shipIndex + 1;
-    }
 
     autoResolveInProgressRef.current = true;
     setLoading(true);
@@ -584,6 +671,64 @@ export function Battleship3DWithContract() {
       const currentSession = sessionIdRef.current;
       const currentUser = userAddressRef.current;
       const currentSigner = getContractSignerRef.current;
+
+      const game = await battleshipService.getGame(currentSession);
+      if (!game) {
+        setError('Game not found on-chain');
+        return;
+      }
+      setGameState(game);
+
+      const shotX = game.pending_shot_x;
+      const shotY = game.pending_shot_y;
+      const shooter = unwrapOptionString(game.pending_shot_shooter);
+      if (shooter == null || shooter === '') {
+        // #region agent log
+        fetch('http://127.0.0.1:7246/ingest/698c3a6d-203c-4b30-9d53-445256ecd091',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8199f0'},body:JSON.stringify({sessionId:'8199f0',runId:'pre-fix-1',hypothesisId:'D',location:'Battleship3DWithContract.tsx:handleResolveShot:noShooter',message:'no pending shooter on-chain during resolve',data:{pendingShotShooterRaw:game.pending_shot_shooter},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+        setError('Pending shot not found on-chain');
+        return;
+      }
+
+      const defenderCommitmentRaw = currentUser === game.player1 ? game.board_commitment_p1 : game.board_commitment_p2;
+      const boardCommitment = unwrapOptionBuffer(defenderCommitmentRaw);
+      if (!boardCommitment || boardCommitment.length !== 32) {
+        setError('Board commitment not found on-chain');
+        return;
+      }
+
+      const boardLayoutCells = boardLayoutCellsFromPositions(placement);
+      if (boardLayoutCells.length !== 17) return;
+      const hitCellIndex = boardLayoutCells.findIndex((c) => c.x === shotX && c.y === shotY);
+      const isHit = hitCellIndex >= 0;
+      let sunkShip = 0;
+      if (isHit) {
+        const shipIndex = hitCellIndex < 5 ? 0 : hitCellIndex < 9 ? 1 : hitCellIndex < 12 ? 2 : hitCellIndex < 15 ? 3 : 4;
+        const shipStart = [0, 5, 9, 12, 15][shipIndex];
+        const shipLen = SHIP_LENGTHS[shipIndex];
+        const shipCells = boardLayoutCells.slice(shipStart, shipStart + shipLen);
+        const hitsIncludingThis = new Set(hits);
+        hitsIncludingThis.add(`${shotX},${shotY}`);
+        if (shipCells.every((c) => hitsIncludingThis.has(`${c.x},${c.y}`))) sunkShip = shipIndex + 1;
+      }
+
+      const recomputedCommitment = await computeBoardCommitment(placement as ShipPosition, salt || '0');
+      if (recomputedCommitment.length !== 32 || boardCommitment.length !== 32) {
+        setError('Board commitment length mismatch');
+        return;
+      }
+      for (let i = 0; i < 32; i++) {
+        if (recomputedCommitment[i] !== (boardCommitment as Uint8Array)[i]) {
+          // #region agent log
+          fetch('http://127.0.0.1:7246/ingest/698c3a6d-203c-4b30-9d53-445256ecd091',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8199f0'},body:JSON.stringify({sessionId:'8199f0',runId:'pre-fix-1',hypothesisId:'E',location:'Battleship3DWithContract.tsx:handleResolveShot:commitmentMismatch',message:'local placement/salt commitment mismatch',data:{mismatchIndex:i,localByte:recomputedCommitment[i],chainByte:(boardCommitment as Uint8Array)[i],hasLocalCommitment:!!commitmentRef.current},timestamp:Date.now()})}).catch(()=>{});
+          // #endregion
+          setError(
+            "Your saved board or salt doesn't match the on-chain commitment. Refresh to restore local placement/salt. If this state was committed on another device or local storage was cleared, this player cannot resolve."
+          );
+          return;
+        }
+      }
+
       const publicInputsHash = await battleshipService.buildPublicInputsHash(
         currentSession,
         currentUser,
@@ -592,18 +737,18 @@ export function Battleship3DWithContract() {
         shotY,
         isHit,
         sunkShip,
-        Buffer.from(commitment)
+        boardCommitment
       );
       const priorHits = boardLayoutCells.map((c) => (hits.has(`${c.x},${c.y}`) ? 1 : 0));
       const witnessInput = buildResolveShotInput(
         placement as ShipPosition,
-        salt,
+        salt || '0',
         priorHits,
         shotX,
         shotY,
         isHit ? 1 : 0,
         sunkShip,
-        commitment,
+        new Uint8Array(boardCommitment),
         new Uint8Array(publicInputsHash)
       );
       const proofPayload = await generateResolveShotProof(witnessInput);
@@ -618,10 +763,16 @@ export function Battleship3DWithContract() {
       );
       if (isHit) setResolvedHitsOnMyBoard((prev) => new Set(prev).add(`${shotX},${shotY}`));
       const msg = isHit ? (sunkShip ? 'Hit! Ship sunk.' : 'Hit!') : 'Miss.';
+      // #region agent log
+      fetch('http://127.0.0.1:7246/ingest/698c3a6d-203c-4b30-9d53-445256ecd091',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8199f0'},body:JSON.stringify({sessionId:'8199f0',runId:'pre-fix-1',hypothesisId:'D',location:'Battleship3DWithContract.tsx:handleResolveShot:success',message:'resolve shot tx succeeded',data:{shotX,shotY,isHit,sunkShip,txHash},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       setSuccess({ message: `Resolved: ${msg}`, txHash });
       await loadGameState();
       setTimeout(() => setSuccess(null), 8000);
     } catch (err) {
+      // #region agent log
+      fetch('http://127.0.0.1:7246/ingest/698c3a6d-203c-4b30-9d53-445256ecd091',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8199f0'},body:JSON.stringify({sessionId:'8199f0',runId:'pre-fix-1',hypothesisId:'D',location:'Battleship3DWithContract.tsx:handleResolveShot:catch',message:'resolve shot failed',data:{error:err instanceof Error ? err.message : String(err)},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       setError(err instanceof Error ? err.message : 'Failed to resolve shot');
     } finally {
       setLoading(false);
@@ -631,11 +782,14 @@ export function Battleship3DWithContract() {
 
   // Auto-resolve: when the defender switches in and a pending shot exists, resolve automatically
   useEffect(() => {
+    // #region agent log
+    fetch('http://127.0.0.1:7246/ingest/698c3a6d-203c-4b30-9d53-445256ecd091',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8199f0'},body:JSON.stringify({sessionId:'8199f0',runId:'pre-fix-1',hypothesisId:'C',location:'Battleship3DWithContract.tsx:autoResolveEffect',message:'auto resolve effect tick',data:{iAmDefender,hasPendingShot,pendingShotShooter,hasPlacement:!!placementFrom3D,hasSalt:!!mySalt,autoResolveInProgress:autoResolveInProgressRef.current},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     if (!iAmDefender || !hasPendingShot) return;
-    if (!placementFrom3D || !myBoardCommitment || !mySalt) return;
+    if (!placementFrom3D || !mySalt) return;
     if (autoResolveInProgressRef.current) return;
     handleResolveShot();
-  }, [iAmDefender, hasPendingShot, placementFrom3D, myBoardCommitment, mySalt]);
+  }, [iAmDefender, hasPendingShot, placementFrom3D, mySalt, pendingShotShooter]);
 
   return (
     <Layout title="Battleship 3D" subtitle="Two-player on-chain">
@@ -708,6 +862,19 @@ export function Battleship3DWithContract() {
 
         {(gamePhase === 'placement' || gamePhase === 'battle') && (
           <>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <span style={{ fontSize: 12, color: '#6b7280' }}>
+                Session {sessionId}
+              </span>
+              <button
+                type="button"
+                onClick={handleSwitchPlayer}
+                disabled={loading || isConnecting || walletType !== 'dev'}
+                className="btn secondary"
+              >
+                {isConnecting ? 'Switching...' : 'Switch Player'}
+              </button>
+            </div>
             <div
               ref={containerRef}
               style={{
@@ -752,12 +919,12 @@ export function Battleship3DWithContract() {
                       Your board is committed. Waiting for the other player to commit theirs...
                     </p>
                   ) : (
-                    <>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                       <p className="text-sm text-gray-700">
-                        Place your 5 ships on the left grid (drag from dock). When done, enter an optional salt and commit.
+                        Place your 5 ships on the left grid, then commit. Click commit only after all ships are placed.
                       </p>
-                      {placementFrom3D && (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {placementFrom3D ? (
+                        <>
                           <label className="text-xs font-bold text-gray-600">Salt (optional)</label>
                           <input
                             type="text"
@@ -769,14 +936,18 @@ export function Battleship3DWithContract() {
                           <button
                             type="button"
                             onClick={handleCommitBoard}
-                            disabled={loading || !placementFrom3D}
+                            disabled={loading}
                             className="btn primary"
                           >
-                            {loading ? 'Committing...' : 'Commit board (on-chain)'}
+                            {loading ? 'Committing...' : 'Commit Board'}
                           </button>
-                        </div>
+                        </>
+                      ) : (
+                        <p className="text-sm" style={{ color: '#6b7280' }}>
+                          Commit Board appears after all ships are placed.
+                        </p>
                       )}
-                    </>
+                    </div>
                   )}
                 </div>
               )}
@@ -823,6 +994,16 @@ export function Battleship3DWithContract() {
                       Opponent&apos;s turn. Switch wallets to play as the other player.
                     </p>
                   )}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, alignItems: 'center', marginTop: 2 }}>
+                    <div style={{ fontSize: 12, color: '#4b5563' }}>
+                      {myPendingShot
+                        ? `Selected target: (${myPendingShot.x}, ${myPendingShot.y})`
+                        : 'No target selected yet. Fire by clicking a tile on opponent grid.'}
+                    </div>
+                    <button type="button" className="btn secondary" disabled style={{ opacity: 0.9 }}>
+                      {fireStatusLabel}
+                    </button>
+                  </div>
                 </div>
               )}
               <Link to="/play" style={{ display: 'inline-block', marginTop: 12, fontSize: 14 }}>
