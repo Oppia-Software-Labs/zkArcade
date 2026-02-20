@@ -45,6 +45,41 @@ interface PerPlayerState {
   myPendingShot: { x: number; y: number } | null;
 }
 
+const SESSION_STORAGE_KEY_3D = 'battleship3d_perPlayerUi_current';
+
+interface SerializedPerPlayerState {
+  placementFrom3D: ShipPositions | null;
+  mySalt: string;
+  myBoardCommitment: number[] | null;
+  resolvedHitsOnMyBoard: string[];
+  myShotsOnOpponent: Record<string, { hit: boolean; sunkShip: number }>;
+  myPendingShot: { x: number; y: number } | null;
+}
+
+function serializePerPlayerUi3D(map: Record<string, PerPlayerState>): Record<string, SerializedPerPlayerState> {
+  const out: Record<string, SerializedPerPlayerState> = {};
+  for (const [key, val] of Object.entries(map)) {
+    out[key] = {
+      ...val,
+      myBoardCommitment: val.myBoardCommitment ? Array.from(val.myBoardCommitment) : null,
+      resolvedHitsOnMyBoard: Array.from(val.resolvedHitsOnMyBoard),
+    };
+  }
+  return out;
+}
+
+function deserializePerPlayerUi3D(raw: Record<string, SerializedPerPlayerState>): Record<string, PerPlayerState> {
+  const out: Record<string, PerPlayerState> = {};
+  for (const [key, val] of Object.entries(raw)) {
+    out[key] = {
+      ...val,
+      myBoardCommitment: val.myBoardCommitment ? new Uint8Array(val.myBoardCommitment) : null,
+      resolvedHitsOnMyBoard: new Set(val.resolvedHitsOnMyBoard),
+    };
+  }
+  return out;
+}
+
 function phaseFromGame(phase: GamePhase): 'placement' | 'battle' | 'ended' {
   if (phase.tag === 'WaitingForBoards') return 'placement';
   if (phase.tag === 'InProgress') return 'battle';
@@ -88,9 +123,28 @@ export function Battleship3DWithContract() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<{ message: string; txHash?: string } | null>(null);
-  const [perPlayerUi, setPerPlayerUi] = useState<Record<string, PerPlayerState>>({});
+  const [perPlayerUi, setPerPlayerUi] = useState<Record<string, PerPlayerState>>(() => {
+    try {
+      const raw = sessionStorage.getItem(SESSION_STORAGE_KEY_3D);
+      if (raw) return deserializePerPlayerUi3D(JSON.parse(raw));
+    } catch { /* ignore corrupt data */ }
+    return {};
+  });
   const prevUserAddressRef = useRef<string>(userAddress);
   const [contractSyncTrigger, setContractSyncTrigger] = useState(0);
+  const playerSwitchPendingRef = useRef(false);
+
+  // Persist perPlayerUi to sessionStorage whenever it changes
+  useEffect(() => {
+    try {
+      const keys = Object.keys(perPlayerUi);
+      if (keys.length === 0) {
+        sessionStorage.removeItem(SESSION_STORAGE_KEY_3D);
+      } else {
+        sessionStorage.setItem(SESSION_STORAGE_KEY_3D, JSON.stringify(serializePerPlayerUi3D(perPlayerUi)));
+      }
+    } catch { /* sessionStorage full or unavailable */ }
+  }, [perPlayerUi]);
 
   const sessionIdRef = useRef(sessionId);
   const userAddressRef = useRef(userAddress);
@@ -220,12 +274,12 @@ export function Battleship3DWithContract() {
     setPerPlayerUi((prev) => {
       const updated = { ...prev };
       updated[prevKey] = {
-        placementFrom3D: placementFrom3D ? { ...placementFrom3D } : null,
-        mySalt,
-        myBoardCommitment: myBoardCommitment ? new Uint8Array(myBoardCommitment) : null,
-        resolvedHitsOnMyBoard: new Set(resolvedHitsOnMyBoard),
-        myShotsOnOpponent: { ...myShotsOnOpponent },
-        myPendingShot: myPendingShot ? { ...myPendingShot } : null,
+        placementFrom3D: placementRef.current ? { ...placementRef.current } : null,
+        mySalt: saltRef.current,
+        myBoardCommitment: commitmentRef.current ? new Uint8Array(commitmentRef.current) : null,
+        resolvedHitsOnMyBoard: new Set(resolvedHitsRef.current),
+        myShotsOnOpponent: { ...myShotsOnOpponentRef.current },
+        myPendingShot: myPendingShotRef.current ? { ...myPendingShotRef.current } : null,
       };
       cachedForNext = updated[nextKey];
       return updated;
@@ -240,6 +294,10 @@ export function Battleship3DWithContract() {
       resetPlayerBoard({ showDock: !inBattle && !haveICommittedBoard });
     }
 
+    // Prevent the sync effect from overwriting with stale outgoing-player
+    // data during this render (React state updates are batched).
+    playerSwitchPendingRef.current = true;
+
     if (cachedForNext) {
       setPlacementFrom3D(cachedForNext.placementFrom3D);
       setMySalt(cachedForNext.mySalt);
@@ -249,8 +307,28 @@ export function Battleship3DWithContract() {
       setMyPendingShot(cachedForNext.myPendingShot ? { ...cachedForNext.myPendingShot } : null);
 
       if (cachedForNext.placementFrom3D) {
-        restoreShipPlacements(cachedForNext.placementFrom3D)
+        const cached = cachedForNext;
+        restoreShipPlacements(cached.placementFrom3D!)
           .then(() => {
+            // Push the incoming player's hit/shot state into the 3D module
+            // immediately after ship restoration so applyContractStateToTiles
+            // paints the correct colors. Without this, the module still holds
+            // the outgoing player's data (React state updates are batched).
+            const setCS = initResultRef.current?.setContractState;
+            if (setCS && gamePhase === 'battle') {
+              const effectivePending = hasPendingShot || cached.myPendingShot != null;
+              setCS({
+                phase: 'battle',
+                isMyTurn: isMyTurn && !effectivePending,
+                hasPendingShot: effectivePending,
+                iAmDefender,
+                pendingShotX: gameState?.pending_shot_x,
+                pendingShotY: gameState?.pending_shot_y,
+                myPendingShot: cached.myPendingShot,
+                resolvedHitsOnMyBoard: new Set(cached.resolvedHitsOnMyBoard),
+                myShotsOnOpponent: { ...cached.myShotsOnOpponent },
+              });
+            }
             setContractSyncTrigger((c) => c + 1);
           })
           .catch((err) => {
@@ -269,6 +347,13 @@ export function Battleship3DWithContract() {
 
   // Sync contract state into 3D when in battle
   useEffect(() => {
+    // Skip when a player switch just happened: React state still holds
+    // the outgoing player's data. The .then() callback after
+    // restoreShipPlacements and the next render will push correct data.
+    if (playerSwitchPendingRef.current) {
+      playerSwitchPendingRef.current = false;
+      return;
+    }
     const setContractState = initResultRef.current?.setContractState;
     if (!setContractState || gamePhase !== 'battle') return;
     const effectivePendingShot = hasPendingShot || myPendingShot != null;
@@ -452,11 +537,15 @@ export function Battleship3DWithContract() {
   const commitmentRef = useRef(myBoardCommitment);
   const saltRef = useRef(mySalt);
   const resolvedHitsRef = useRef(resolvedHitsOnMyBoard);
+  const myShotsOnOpponentRef = useRef(myShotsOnOpponent);
+  const myPendingShotRef = useRef(myPendingShot);
   const gameStateRef = useRef(gameState);
   useEffect(() => { placementRef.current = placementFrom3D; }, [placementFrom3D]);
   useEffect(() => { commitmentRef.current = myBoardCommitment; }, [myBoardCommitment]);
   useEffect(() => { saltRef.current = mySalt; }, [mySalt]);
   useEffect(() => { resolvedHitsRef.current = resolvedHitsOnMyBoard; }, [resolvedHitsOnMyBoard]);
+  useEffect(() => { myShotsOnOpponentRef.current = myShotsOnOpponent; }, [myShotsOnOpponent]);
+  useEffect(() => { myPendingShotRef.current = myPendingShot; }, [myPendingShot]);
   useEffect(() => { gameStateRef.current = gameState; }, [gameState]);
 
   const handleResolveShot = async () => {

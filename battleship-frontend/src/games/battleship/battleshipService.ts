@@ -716,11 +716,17 @@ export class BattleshipService {
       board_commitment: boardCommitment,
     }, DEFAULT_METHOD_OPTIONS);
     const result = await tx.simulate();
-    const res = result.result as unknown as { isOk(): boolean; unwrap(): Uint8Array };
-    if (!res.isOk()) {
-      throw new Error('build_public_inputs_hash simulation failed');
+    const raw: unknown = result.result;
+    if (raw == null) {
+      throw new Error('build_public_inputs_hash simulation returned no result');
     }
-    return Buffer.from(res.unwrap());
+    if (Buffer.isBuffer(raw)) {
+      return raw;
+    }
+    if (raw instanceof Uint8Array) {
+      return Buffer.from(raw);
+    }
+    throw new Error(`build_public_inputs_hash returned unexpected type: ${typeof raw}`);
   }
 
   /**

@@ -10,6 +10,24 @@ import { canPlaceShip, getShipCells } from '@/game/placement';
 import type { Game, GamePhase } from './bindings';
 import { Buffer } from 'buffer';
 
+/** Unwrap Option<Buffer> from contract (tag/values or raw Buffer). Returns null if None or missing. */
+function unwrapOptionBuffer(opt: Game['board_commitment_p1']): Buffer | null {
+  if (opt == null || opt === undefined) return null;
+  if (Buffer.isBuffer(opt)) return opt;
+  const o = opt as { tag?: string; values?: unknown[] };
+  if (o.tag === 'Some' && Array.isArray(o.values) && o.values[0] != null && Buffer.isBuffer(o.values[0])) return o.values[0] as Buffer;
+  return null;
+}
+
+/** Unwrap Option<string> from contract (tag/values or raw string). Returns null if None or missing. */
+function unwrapOptionString(opt: Game['pending_shot_shooter']): string | null {
+  if (opt == null || opt === undefined) return null;
+  if (typeof opt === 'string') return opt;
+  const o = opt as { tag?: string; values?: unknown[] };
+  if (o.tag === 'Some' && Array.isArray(o.values) && o.values[0] != null && typeof o.values[0] === 'string') return o.values[0] as string;
+  return null;
+}
+
 const GRID_SIZE = 10;
 /** Order: Carrier, Battleship, Cruiser, Submarine, Destroyer */
 const SHIP_LENGTHS = [5, 4, 3, 3, 2] as const;
@@ -70,6 +88,44 @@ export interface PlayerUiState {
   lastCommitTxHash: string | null;
 }
 
+const SESSION_STORAGE_KEY_PREFIX = 'battleship_perPlayerUi_';
+
+interface SerializedPlayerUiState {
+  placementShips: { x: number; y: number; dir: number }[];
+  placementIndex: number;
+  placementOrientation: 'horizontal' | 'vertical';
+  mySalt: string;
+  myBoardCommitment: number[] | null;
+  resolvedHitsOnMyBoard: string[];
+  myPendingShot: { x: number; y: number } | null;
+  myShotsOnOpponent: Record<string, { hit: boolean; sunkShip: number }>;
+  lastCommitTxHash: string | null;
+}
+
+function serializePerPlayerUi(map: Record<string, PlayerUiState>): Record<string, SerializedPlayerUiState> {
+  const out: Record<string, SerializedPlayerUiState> = {};
+  for (const [key, val] of Object.entries(map)) {
+    out[key] = {
+      ...val,
+      myBoardCommitment: val.myBoardCommitment ? Array.from(val.myBoardCommitment) : null,
+      resolvedHitsOnMyBoard: Array.from(val.resolvedHitsOnMyBoard),
+    };
+  }
+  return out;
+}
+
+function deserializePerPlayerUi(raw: Record<string, SerializedPlayerUiState>): Record<string, PlayerUiState> {
+  const out: Record<string, PlayerUiState> = {};
+  for (const [key, val] of Object.entries(raw)) {
+    out[key] = {
+      ...val,
+      myBoardCommitment: val.myBoardCommitment ? new Uint8Array(val.myBoardCommitment) : null,
+      resolvedHitsOnMyBoard: new Set(val.resolvedHitsOnMyBoard),
+    };
+  }
+  return out;
+}
+
 export function BattleshipGame({
   userAddress,
   availablePoints,
@@ -119,9 +175,54 @@ export function BattleshipGame({
   const [lastCommitTxHash, setLastCommitTxHash] = useState<string | null>(null);
 
   /** Per-player UI state cache keyed by `${sessionId}:${userAddress}` so switching players restores each board. */
-  const [perPlayerUi, setPerPlayerUi] = useState<Record<string, PlayerUiState>>({});
+  const [perPlayerUi, setPerPlayerUi] = useState<Record<string, PlayerUiState>>(() => {
+    try {
+      const raw = sessionStorage.getItem(SESSION_STORAGE_KEY_PREFIX + 'current');
+      if (raw) return deserializePerPlayerUi(JSON.parse(raw));
+    } catch { /* ignore corrupt data */ }
+    return {};
+  });
+
+  // Persist perPlayerUi to sessionStorage whenever it changes
+  useEffect(() => {
+    try {
+      const keys = Object.keys(perPlayerUi);
+      if (keys.length === 0) {
+        sessionStorage.removeItem(SESSION_STORAGE_KEY_PREFIX + 'current');
+      } else {
+        sessionStorage.setItem(
+          SESSION_STORAGE_KEY_PREFIX + 'current',
+          JSON.stringify(serializePerPlayerUi(perPlayerUi))
+        );
+      }
+    } catch { /* sessionStorage full or unavailable */ }
+  }, [perPlayerUi]);
+
+  // #region agent log
+  useEffect(()=>{const _keys=Object.keys(perPlayerUi);const _detail=Object.fromEntries(_keys.map(k=>[k,{ships:perPlayerUi[k]?.placementShips?.length??0,commitment:!!perPlayerUi[k]?.myBoardCommitment}]));console.warn('[DBG:mount:perPlayerUi]',{keys:_keys,detail:_detail,userAddress,sessionId});fetch('http://127.0.0.1:7246/ingest/698c3a6d-203c-4b30-9d53-445256ecd091',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'BattleshipGame.tsx:mount:perPlayerUi',message:'initial perPlayerUi',data:{keys:_keys,detail:_detail,userAddress,sessionId},timestamp:Date.now(),hypothesisId:'MOUNT'})}).catch(()=>{});},[]);
+  // #endregion
 
   const prevUserAddressRef = useRef<string>(userAddress);
+
+  const placementShipsRef = useRef(placementShips);
+  const placementIndexRef = useRef(placementIndex);
+  const placementOrientationRef = useRef(placementOrientation);
+  const mySaltRef = useRef(mySalt);
+  const myBoardCommitmentRef = useRef(myBoardCommitment);
+  const resolvedHitsOnMyBoardRef = useRef(resolvedHitsOnMyBoard);
+  const myPendingShotRef = useRef(myPendingShot);
+  const myShotsOnOpponentRef = useRef(myShotsOnOpponent);
+  const lastCommitTxHashRef = useRef(lastCommitTxHash);
+
+  useEffect(() => { placementShipsRef.current = placementShips; }, [placementShips]);
+  useEffect(() => { placementIndexRef.current = placementIndex; }, [placementIndex]);
+  useEffect(() => { placementOrientationRef.current = placementOrientation; }, [placementOrientation]);
+  useEffect(() => { mySaltRef.current = mySalt; }, [mySalt]);
+  useEffect(() => { myBoardCommitmentRef.current = myBoardCommitment; }, [myBoardCommitment]);
+  useEffect(() => { resolvedHitsOnMyBoardRef.current = resolvedHitsOnMyBoard; }, [resolvedHitsOnMyBoard]);
+  useEffect(() => { myPendingShotRef.current = myPendingShot; }, [myPendingShot]);
+  useEffect(() => { myShotsOnOpponentRef.current = myShotsOnOpponent; }, [myShotsOnOpponent]);
+  useEffect(() => { lastCommitTxHashRef.current = lastCommitTxHash; }, [lastCommitTxHash]);
 
   useEffect(() => {
     setPlayer1Address(userAddress);
@@ -134,25 +235,36 @@ export function BattleshipGame({
     const prevKey = `${sessionId}:${prevUserAddressRef.current}`;
     const nextKey = `${sessionId}:${userAddress}`;
 
-    let cachedForNext: PlayerUiState | undefined;
+    // Read cached state for the incoming player BEFORE the state update.
+    // React 18 defers updater functions, so side-effects inside setPerPlayerUi
+    // are not available synchronously after the call.
+    const cachedForNext: PlayerUiState | undefined = perPlayerUi[nextKey];
+
     setPerPlayerUi((prev) => {
-      const updated = { ...prev };
-      updated[prevKey] = {
-        placementShips: [...placementShips],
-        placementIndex,
-        placementOrientation,
-        mySalt,
-        myBoardCommitment: myBoardCommitment ? new Uint8Array(myBoardCommitment) : null,
-        resolvedHitsOnMyBoard: new Set(resolvedHitsOnMyBoard),
-        myPendingShot: myPendingShot ? { ...myPendingShot } : null,
-        myShotsOnOpponent: { ...myShotsOnOpponent },
-        lastCommitTxHash,
+      // #region agent log
+      const _sw={prevKey,nextKey,prevKeys:Object.keys(prev),savingShips:placementShipsRef.current.length,savingCommitment:!!myBoardCommitmentRef.current,hasNextInPrev:!!prev[nextKey],nextShips:prev[nextKey]?.placementShips?.length??0,nextCommitment:!!prev[nextKey]?.myBoardCommitment};console.warn('[DBG:walletSwitch:updater]',_sw);fetch('http://127.0.0.1:7246/ingest/698c3a6d-203c-4b30-9d53-445256ecd091',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'BattleshipGame.tsx:walletSwitch:updater',message:'perPlayerUi updater',data:_sw,timestamp:Date.now(),hypothesisId:'SWITCH'})}).catch(()=>{});
+      // #endregion
+      return {
+        ...prev,
+        [prevKey]: {
+          placementShips: [...placementShipsRef.current],
+          placementIndex: placementIndexRef.current,
+          placementOrientation: placementOrientationRef.current,
+          mySalt: mySaltRef.current,
+          myBoardCommitment: myBoardCommitmentRef.current ? new Uint8Array(myBoardCommitmentRef.current) : null,
+          resolvedHitsOnMyBoard: new Set(resolvedHitsOnMyBoardRef.current),
+          myPendingShot: myPendingShotRef.current ? { ...myPendingShotRef.current } : null,
+          myShotsOnOpponent: { ...myShotsOnOpponentRef.current },
+          lastCommitTxHash: lastCommitTxHashRef.current,
+        },
       };
-      cachedForNext = updated[nextKey];
-      return updated;
     });
 
     prevUserAddressRef.current = userAddress;
+
+    // #region agent log
+    const _sw2={cachedFound:!!cachedForNext,cachedShips:cachedForNext?.placementShips?.length??0,cachedCommitment:!!cachedForNext?.myBoardCommitment};console.warn('[DBG:walletSwitch:restore]',_sw2);fetch('http://127.0.0.1:7246/ingest/698c3a6d-203c-4b30-9d53-445256ecd091',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'BattleshipGame.tsx:walletSwitch:restore',message:'restoring cached state',data:_sw2,timestamp:Date.now(),hypothesisId:'SWITCH'})}).catch(()=>{});
+    // #endregion
 
     if (cachedForNext) {
       setPlacementShips(cachedForNext.placementShips);
@@ -175,7 +287,56 @@ export function BattleshipGame({
       setMyShotsOnOpponent({});
       setLastCommitTxHash(null);
     }
-  }, [userAddress, sessionId]);
+  }, [userAddress, sessionId]); // eslint-disable-line react-hooks/exhaustive-deps -- perPlayerUi read from closure is intentional; effect must only fire on wallet/session change
+
+  /** Restore current player's state from sessionStorage on load (e.g. after refresh) so placement/salt match what was committed. */
+  const currentPlayerKey = `${sessionId}:${userAddress}`;
+  useEffect(() => {
+    const cached = perPlayerUi[currentPlayerKey];
+    if (!cached?.placementShips?.length) return;
+    if (placementShips.length === 0 && cached.placementShips.length === 5) {
+      setPlacementShips(cached.placementShips);
+      setPlacementIndex(cached.placementIndex);
+      setPlacementOrientation(cached.placementOrientation);
+      setMySalt(cached.mySalt);
+      setMyBoardCommitment(cached.myBoardCommitment ? new Uint8Array(cached.myBoardCommitment) : null);
+      setResolvedHitsOnMyBoard(new Set(cached.resolvedHitsOnMyBoard));
+      setMyPendingShot(cached.myPendingShot ? { ...cached.myPendingShot } : null);
+      setMyShotsOnOpponent({ ...cached.myShotsOnOpponent });
+      setLastCommitTxHash(cached.lastCommitTxHash);
+    }
+  }, [currentPlayerKey, perPlayerUi, placementShips.length]);
+
+  /** Keep current player's state in perPlayerUi (and thus sessionStorage) so it survives refresh. Only sync when we have state worth saving so we don't overwrite cached state with empty on load. */
+  useEffect(() => {
+    const hasState = placementShips.length > 0 || mySalt !== '' || myBoardCommitment != null;
+    if (!hasState) return;
+    setPerPlayerUi((prev) => ({
+      ...prev,
+      [currentPlayerKey]: {
+        placementShips: [...placementShips],
+        placementIndex,
+        placementOrientation,
+        mySalt,
+        myBoardCommitment: myBoardCommitment ? new Uint8Array(myBoardCommitment) : null,
+        resolvedHitsOnMyBoard: new Set(resolvedHitsOnMyBoard),
+        myPendingShot: myPendingShot ? { ...myPendingShot } : null,
+        myShotsOnOpponent: { ...myShotsOnOpponent },
+        lastCommitTxHash,
+      },
+    }));
+  }, [
+    currentPlayerKey,
+    placementShips,
+    placementIndex,
+    placementOrientation,
+    mySalt,
+    myBoardCommitment,
+    resolvedHitsOnMyBoard,
+    myPendingShot,
+    myShotsOnOpponent,
+    lastCommitTxHash,
+  ]);
 
   useEffect(() => {
     if (createMode === 'import' && !importPlayer2Points.trim()) {
@@ -258,6 +419,9 @@ export function BattleshipGame({
   const loadGameState = async () => {
     try {
       const game = await battleshipService.getGame(sessionId);
+      // #region agent log
+      const _ld={shooter:game?.pending_shot_shooter??null,phase:game?.phase?.tag??null,shotX:game?.pending_shot_x,shotY:game?.pending_shot_y};console.warn('[DBG:loadGameState]',_ld);fetch('http://127.0.0.1:7246/ingest/698c3a6d-203c-4b30-9d53-445256ecd091',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'BattleshipGame.tsx:loadGameState',message:'polled game state',data:_ld,timestamp:Date.now(),hypothesisId:'POLL'})}).catch(()=>{});
+      // #endregion
       setGameState(game);
       if (game) {
         setGamePhase(phaseFromGame(game.phase));
@@ -1071,33 +1235,107 @@ export function BattleshipGame({
     });
   };
 
+  const autoResolveInProgressRef = useRef(false);
+
   const handleResolveShot = async () => {
-    if (!gameState || placementShips.length !== 5 || !myBoardCommitment || boardLayoutCells.length !== 17) return;
-    const shotX = gameState.pending_shot_x;
-    const shotY = gameState.pending_shot_y;
-    const shooter = gameState.pending_shot_shooter;
-    if (shooter == null || shooter === undefined || shooter === '') return;
+    const gs = gameState;
+    const ships = placementShipsRef.current;
+    const salt = mySaltRef.current;
+    const hits = resolvedHitsOnMyBoardRef.current;
+    // #region agent log
+    const _g1={hasGs:!!gs,shipsLen:ships.length,hasSalt:!!salt,boardLayoutLen:boardLayoutCells.length,autoInProgress:autoResolveInProgressRef.current};console.warn('[DBG:resolveShot:guard1]',_g1);fetch('http://127.0.0.1:7246/ingest/698c3a6d-203c-4b30-9d53-445256ecd091',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'BattleshipGame.tsx:handleResolveShot:guard1',message:'handleResolveShot entered',data:_g1,timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{});
+    // #endregion
+    if (!gs || ships.length !== 5 || !salt || boardLayoutCells.length !== 17) return;
+    if (autoResolveInProgressRef.current) return;
 
-    const hitCellIndex = boardLayoutCells.findIndex((c) => c.x === shotX && c.y === shotY);
-    const isHit = hitCellIndex >= 0;
-    let sunkShip = 0;
-    if (isHit) {
-      const shipIndex = hitCellIndex < 5 ? 0 : hitCellIndex < 9 ? 1 : hitCellIndex < 12 ? 2 : hitCellIndex < 15 ? 3 : 4;
-      const shipStart = [0, 5, 9, 12, 15][shipIndex];
-      const shipLen = SHIP_LENGTHS[shipIndex];
-      const shipCells = boardLayoutCells.slice(shipStart, shipStart + shipLen);
-      const hitsIncludingThis = new Set(resolvedHitsOnMyBoard);
-      hitsIncludingThis.add(`${shotX},${shotY}`);
-      const allHit = shipCells.every((c) => hitsIncludingThis.has(`${c.x},${c.y}`));
-      if (allHit) sunkShip = shipIndex + 1;
-    }
-
+    autoResolveInProgressRef.current = true;
+    // #region agent log
+    const _pra={actionLock:actionLock.current,isBusy,loading,quickstartLoading};console.warn('[DBG:resolveShot:preRunAction]',_pra);fetch('http://127.0.0.1:7246/ingest/698c3a6d-203c-4b30-9d53-445256ecd091',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'BattleshipGame.tsx:handleResolveShot:preRunAction',message:'about to call runAction',data:_pra,timestamp:Date.now(),hypothesisId:'D'})}).catch(()=>{});
+    // #endregion
     await runAction(async () => {
       try {
+        // #region agent log
+        console.warn('[DBG:resolveShot:insideRunAction] callback executing');fetch('http://127.0.0.1:7246/ingest/698c3a6d-203c-4b30-9d53-445256ecd091',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'BattleshipGame.tsx:handleResolveShot:insideRunAction',message:'runAction callback executing',data:{},timestamp:Date.now(),hypothesisId:'D'})}).catch(()=>{});
+        // #endregion
         setLoading(true);
         setError(null);
-        setSuccess(null);
-        const priorHits = boardLayoutCells.map((c) => (resolvedHitsOnMyBoard.has(`${c.x},${c.y}`) ? 1 : 0));
+        setSuccess('Auto-resolving shot... generating ZK proof');
+
+        // 1) Fetch fresh game from chain and derive shot + defender commitment (on-chain only)
+        const game = await battleshipService.getGame(sessionId);
+        if (!game) {
+          setError('Game not found on-chain');
+          return;
+        }
+        const shotX = game.pending_shot_x;
+        const shotY = game.pending_shot_y;
+        const shooter = unwrapOptionString(game.pending_shot_shooter);
+        if (shooter == null || shooter === '') {
+          setError('Pending shot not found on-chain');
+          return;
+        }
+        const defenderCommitmentRaw = userAddress === game.player1 ? game.board_commitment_p1 : game.board_commitment_p2;
+        const boardCommitment = unwrapOptionBuffer(defenderCommitmentRaw);
+        if (!boardCommitment || boardCommitment.length !== 32) {
+          setError('Board commitment not found on-chain');
+          return;
+        }
+        setGameState(game);
+
+        // Optional: warn if local commitment differs from on-chain
+        const localCommitment = myBoardCommitmentRef.current;
+        if (localCommitment && localCommitment.length === 32) {
+          let same = true;
+          for (let i = 0; i < 32; i++) {
+            if ((boardCommitment as Uint8Array)[i] !== localCommitment[i]) { same = false; break; }
+          }
+          if (!same) {
+            console.warn('Your stored board commitment does not match the chain; using on-chain commitment to resolve.');
+          }
+        }
+
+        const hitCellIndex = boardLayoutCells.findIndex((c) => c.x === shotX && c.y === shotY);
+        const isHit = hitCellIndex >= 0;
+        let sunkShip = 0;
+        if (isHit) {
+          const shipIndex = hitCellIndex < 5 ? 0 : hitCellIndex < 9 ? 1 : hitCellIndex < 12 ? 2 : hitCellIndex < 15 ? 3 : 4;
+          const shipStart = [0, 5, 9, 12, 15][shipIndex];
+          const shipLen = SHIP_LENGTHS[shipIndex];
+          const shipCells = boardLayoutCells.slice(shipStart, shipStart + shipLen);
+          const hitsIncludingThis = new Set(hits);
+          hitsIncludingThis.add(`${shotX},${shotY}`);
+          const allHit = shipCells.every((c) => hitsIncludingThis.has(`${c.x},${c.y}`));
+          if (allHit) sunkShip = shipIndex + 1;
+        }
+
+        const shipPositions: ShipPosition = {
+          ship_x: ships.map((s) => s.x),
+          ship_y: ships.map((s) => s.y),
+          ship_dir: ships.map((s) => s.dir),
+        };
+        // ResolveShot circuit (line 37) constrains: Poseidon(ships, salt) === board_commitment_hi*2^128+lo.
+        // If local (ships, salt) don't match what was committed, the circuit throws "Assert Failed".
+        const recomputedCommitment = await computeBoardCommitment(shipPositions, salt || '0');
+        if (recomputedCommitment.length !== 32 || boardCommitment.length !== 32) {
+          setError('Board commitment length mismatch');
+          return;
+        }
+        let commitmentMatch = true;
+        for (let i = 0; i < 32; i++) {
+          if (recomputedCommitment[i] !== (boardCommitment as Uint8Array)[i]) {
+            commitmentMatch = false;
+            break;
+          }
+        }
+        if (!commitmentMatch) {
+          setError(
+            "Your saved board or salt doesn't match the on-chain commitment. Try refreshing the page so we can restore your placement from this browser's storage. If you committed from another device or cleared site data, you won't be able to resolve this game."
+          );
+          return;
+        }
+
+        const priorHits = boardLayoutCells.map((c) => (hits.has(`${c.x},${c.y}`) ? 1 : 0));
+        const boardCommitmentBytes = new Uint8Array(boardCommitment);
         const publicInputsHash = await battleshipService.buildPublicInputsHash(
           sessionId,
           userAddress,
@@ -1106,22 +1344,17 @@ export function BattleshipGame({
           shotY,
           isHit,
           sunkShip,
-          Buffer.from(myBoardCommitment)
+          boardCommitment
         );
-        const shipPositions: ShipPosition = {
-          ship_x: placementShips.map((s) => s.x),
-          ship_y: placementShips.map((s) => s.y),
-          ship_dir: placementShips.map((s) => s.dir),
-        };
         const witnessInput = buildResolveShotInput(
           shipPositions,
-          mySalt || '0',
+          salt || '0',
           priorHits,
           shotX,
           shotY,
           isHit ? 1 : 0,
           sunkShip,
-          myBoardCommitment,
+          boardCommitmentBytes,
           new Uint8Array(publicInputsHash)
         );
         const proofPayload = await generateResolveShotProof(witnessInput);
@@ -1142,12 +1375,31 @@ export function BattleshipGame({
         setTimeout(() => setSuccess(null), 3000);
       } catch (err) {
         console.error('Resolve shot error:', err);
+        // #region agent log
+        const _err=err instanceof Error ? err.message : String(err);console.warn('[DBG:resolveShot:catch]',_err);fetch('http://127.0.0.1:7246/ingest/698c3a6d-203c-4b30-9d53-445256ecd091',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'BattleshipGame.tsx:handleResolveShot:catch',message:'error in resolve',data:{error:_err},timestamp:Date.now(),hypothesisId:'E'})}).catch(()=>{});
+        // #endregion
         setError(err instanceof Error ? err.message : 'Failed to resolve shot');
       } finally {
         setLoading(false);
+        autoResolveInProgressRef.current = false;
       }
     });
   };
+
+  // #region agent log
+  console.warn('[DBG:render]',{iAmDefender,hasPendingShot,shipsLen:placementShipsRef.current.length,hasCommitment:!!myBoardCommitmentRef.current,autoInProgress:autoResolveInProgressRef.current,shooter:gameState?.pending_shot_shooter,user:userAddress,boardLayoutLen:boardLayoutCells.length,loading,actionLock:actionLock.current});
+  // #endregion
+
+  // Auto-resolve: when the defender has board data and a pending shot exists, resolve automatically
+  useEffect(() => {
+    // #region agent log
+    const _ae={iAmDefender,hasPendingShot,shipsLen:placementShipsRef.current.length,hasCommitment:!!myBoardCommitmentRef.current,autoInProgress:autoResolveInProgressRef.current,pendingShotShooter:gameState?.pending_shot_shooter,userAddress,boardLayoutLen:boardLayoutCells.length};console.warn('[DBG:useEffect-autoResolve]',_ae);fetch('http://127.0.0.1:7246/ingest/698c3a6d-203c-4b30-9d53-445256ecd091',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'BattleshipGame.tsx:useEffect-autoResolve',message:'auto-resolve useEffect fired',data:_ae,timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
+    if (!iAmDefender || !hasPendingShot) return;
+    if (placementShipsRef.current.length !== 5 || !myBoardCommitmentRef.current) return;
+    if (autoResolveInProgressRef.current) return;
+    handleResolveShot();
+  }, [iAmDefender, hasPendingShot, gameState?.pending_shot_shooter, myBoardCommitment]);
 
   return (
     <div className="bg-white/70 backdrop-blur-xl rounded-2xl p-8 shadow-xl border-2 border-purple-200">
@@ -1644,16 +1896,21 @@ export function BattleshipGame({
           {hasPendingShot && (
             <div className="p-4 bg-amber-50 border-2 border-amber-200 rounded-xl space-y-3">
               <p className="text-sm font-semibold text-amber-800">
-                Pending shot at ({gameState.pending_shot_x}, {gameState.pending_shot_y}). {iAmDefender ? 'You are the defender — resolve with a ZK proof.' : 'Waiting for defender to resolve.'}
+                Pending shot at ({gameState.pending_shot_x}, {gameState.pending_shot_y}).{' '}
+                {iAmDefender
+                  ? loading
+                    ? 'Generating ZK proof & resolving...'
+                    : 'Auto-resolving incoming shot...'
+                  : 'Waiting for defender to resolve.'}
               </p>
-              {iAmDefender && (
+              {iAmDefender && !loading && (
                 <button
                   type="button"
                   onClick={handleResolveShot}
                   disabled={isBusy || placementShips.length !== 5 || !myBoardCommitment}
-                  className="py-3 px-4 rounded-xl font-bold text-white bg-amber-500 hover:bg-amber-600 disabled:opacity-50"
+                  className="py-2 px-3 rounded-lg text-xs font-semibold text-amber-700 border border-amber-300 hover:bg-amber-100 disabled:opacity-50"
                 >
-                  {loading ? 'Generating proof...' : 'Resolve shot (generate proof & submit)'}
+                  Retry resolve manually
                 </button>
               )}
             </div>
