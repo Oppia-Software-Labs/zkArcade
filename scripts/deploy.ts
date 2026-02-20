@@ -61,6 +61,9 @@ const NETWORK = 'testnet';
 const RPC_URL = 'https://soroban-testnet.stellar.org';
 const NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015';
 const EXISTING_GAME_HUB_TESTNET_CONTRACT_ID = 'CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG';
+/** Deploy order: verifier stack (circom → adapter) then battleship which needs adapter + game_hub */
+const DEPLOY_ORDER = ["circom-groth16-verifier", "battleship-verifier-adapter", "battleship"];
+const VKEY_SOROBAN_PATH = "circuits/build/vkey_soroban.json";
 
 async function testnetAccountExists(address: string): Promise<boolean> {
   const res = await fetch(`https://horizon-testnet.stellar.org/accounts/${address}`, { method: 'GET' });
@@ -210,7 +213,7 @@ try {
 for (const identity of ['player1', 'player2']) {
   console.log(`Setting up ${identity}...`);
 
-  let keypair: Keypair;
+  let keypair: StellarKeypair;
   if (existingSecrets[identity]) {
     console.log(`✅ Using existing ${identity} from .env`);
     keypair = Keypair.fromSecret(existingSecrets[identity]!);
@@ -288,9 +291,16 @@ if (shouldEnsureMock) {
   }
 }
 
-for (const contract of contracts) {
-  if (contract.isMockHub) continue;
+// Deploy non-mock contracts in dependency order with correct constructor args
+const orderedContracts = [...contracts]
+  .filter((c) => !c.isMockHub)
+  .sort((a, b) => {
+    const ia = DEPLOY_ORDER.indexOf(a.packageName);
+    const ib = DEPLOY_ORDER.indexOf(b.packageName);
+    return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
+  });
 
+for (const contract of orderedContracts) {
   console.log(`Deploying ${contract.packageName}...`);
   try {
     console.log("  Installing WASM...");
@@ -299,9 +309,35 @@ for (const contract of contracts) {
     const wasmHash = installResult.trim();
     console.log(`  WASM hash: ${wasmHash}`);
 
+    let constructorArgs: string[];
+    if (contract.packageName === "circom-groth16-verifier") {
+      if (!existsSync(VKEY_SOROBAN_PATH)) {
+        console.error(`❌ Error: ${VKEY_SOROBAN_PATH} not found. Run circuits setup first:`);
+        console.error("   bun run circuits:build && bun run circuits:setup-vkey -- --ptau circuits/build/ptau.ptau && bun run circuits:vkey-to-soroban");
+        process.exit(1);
+      }
+      constructorArgs = ["--vk-file-path", VKEY_SOROBAN_PATH];
+    } else if (contract.packageName === "battleship-verifier-adapter") {
+      const verifierId = deployed["circom-groth16-verifier"];
+      if (!verifierId) {
+        console.error("❌ Error: circom-groth16-verifier must be deployed before battleship-verifier-adapter.");
+        process.exit(1);
+      }
+      constructorArgs = ["--admin", adminAddress, "--verifier", verifierId];
+    } else if (contract.packageName === "battleship") {
+      const verifierId = deployed["battleship-verifier-adapter"];
+      if (!verifierId) {
+        console.error("❌ Error: battleship-verifier-adapter must be deployed before battleship.");
+        process.exit(1);
+      }
+      constructorArgs = ["--admin", adminAddress, "--game-hub", mockGameHubId, "--verifier", verifierId];
+    } else {
+      constructorArgs = ["--admin", adminAddress, "--game-hub", mockGameHubId];
+    }
+
     console.log("  Deploying and initializing...");
     const deployResult =
-      await $`stellar contract deploy --wasm-hash ${wasmHash} --source-account ${adminSecret} --network ${NETWORK} -- --admin ${adminAddress} --game-hub ${mockGameHubId}`.text();
+      await $`stellar contract deploy --wasm-hash ${wasmHash} --source-account ${adminSecret} --network ${NETWORK} -- ${constructorArgs}`.text();
     const contractId = deployResult.trim();
     deployed[contract.packageName] = contractId;
     console.log(`✅ ${contract.packageName} deployed: ${contractId}\n`);
