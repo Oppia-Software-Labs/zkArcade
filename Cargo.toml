@@ -5,6 +5,7 @@ members = [
   "contracts/battleship",
   "contracts/battleship-verifier-adapter",
   "contracts/circom-groth16-verifier",
+  "contracts/mock-game-hub",
 ]
 
 [workspace.dependencies]
