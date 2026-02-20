@@ -1,11 +1,12 @@
 [workspace]
 resolver = "2"
-version = "0.1.2"
 members = [
   "contracts/battleship",
   "contracts/battleship-verifier-adapter",
   "contracts/circom-groth16-verifier",
   "contracts/mock-game-hub",
+  "contracts/wordle",
+  "contracts/wordle-verifier-adapter",
 ]
 
 [workspace.dependencies]

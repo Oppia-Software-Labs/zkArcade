@@ -1,7 +1,10 @@
 #!/usr/bin/env bun
 
 /**
- * Build script for Circom circuits (board_commit, resolve_shot).
+ * Build script for Circom circuits.
+ *
+ * Battleship circuits: board_commit, resolve_shot
+ * Wordle circuits: word_commit, resolve_guess
  *
  * Compiles circuits with circom using circomlib from node_modules.
  * Outputs R1CS, WASM, and symbol file to circuits/build.
@@ -20,7 +23,14 @@ const CIRCUITS_DIR = join(ROOT, "circuits");
 const BUILD_DIR = join(CIRCUITS_DIR, "build");
 const NODE_MODULES = join(ROOT, "node_modules");
 
-const CIRCUITS = ["board_commit", "resolve_shot"] as const;
+const CIRCUITS = [
+  // Battleship circuits
+  "board_commit",
+  "resolve_shot",
+  // Wordle circuits
+  "word_commit",
+  "resolve_guess",
+] as const;
 
 async function main() {
   console.log("🔌 Building Circom circuits...\n");
