@@ -6,11 +6,10 @@
  * Prerequisites:
  * - Circuits built: bun run circuits:build (produces circuits/build/resolve_shot.r1cs)
  * - snarkjs installed: bun install (or npm install) so npx snarkjs works
- * - A powers-of-tau (ptau) file. The ptau size must be at least as large as the
- *   number of constraints. Run: npx snarkjs r1cs info circuits/build/resolve_shot.r1cs
- *   to get # constraints, then use a ptau with power >= log2(constraints).
- *   Download e.g. from Hermez Phase 1 (see circuits/README.md) or generate with
- *   snarkjs powersoftau new bn128 <power> ptau.ptau
+ * - A powers-of-tau (ptau) file (Phase 1 is enough; the script runs pt2 to prepare Phase 2).
+ *   The ptau size must be at least as large as the number of constraints. Run:
+ *   npx snarkjs r1cs info circuits/build/resolve_shot.r1cs then use power >= log2(constraints).
+ *   Generate with: npx snarkjs ptn bn128 12 ptau.ptau (or download from Hermez Phase 1).
  *
  * Usage:
  *   bun run scripts/circuits-setup-vkey.ts --ptau <path-to.ptau>
@@ -25,12 +24,13 @@
  */
 
 import { $ } from "bun";
-import { existsSync } from "fs";
+import { existsSync, statSync } from "fs";
 import { join } from "path";
 
 const ROOT = import.meta.dir + "/..";
 const BUILD_DIR = join(ROOT, "circuits", "build");
 const R1CS = join(BUILD_DIR, "resolve_shot.r1cs");
+const PTAU_PHASE2 = join(BUILD_DIR, "ptau_phase2.ptau");
 const ZKEY_INITIAL = join(BUILD_DIR, "resolve_shot_0000.zkey");
 const ZKEY_FINAL = join(BUILD_DIR, "resolve_shot_final.zkey");
 const VKEY_JSON = join(BUILD_DIR, "vkey.json");
@@ -81,9 +81,21 @@ async function main() {
 
   console.log("Groth16 setup for resolve_shot...\n");
 
-  // 1) groth16 setup: circuit.r1cs + ptau -> circuit_0000.zkey
-  console.log("Running snarkjs groth16 setup...");
-  await $`npx snarkjs g16s ${R1CS} ${ptau} ${ZKEY_INITIAL}`.quiet();
+  // 0) Prepare phase 2 (g16s requires a phase2-prepared ptau; ptn/raw ptaus are phase1 only)
+  console.log("Preparing powers of tau for phase 2...");
+  await $`npx snarkjs pt2 ${ptau} ${PTAU_PHASE2}`.quiet();
+  console.log("Wrote", PTAU_PHASE2);
+
+  // 1) groth16 setup: circuit.r1cs + phase2 ptau -> circuit_0000.zkey (run from BUILD_DIR so zkey is written correctly)
+  console.log("\nRunning snarkjs groth16 setup...");
+  const r1csRel = "resolve_shot.r1cs";
+  const ptau2Rel = "ptau_phase2.ptau";
+  const zkeyRel = "resolve_shot_0000.zkey";
+  await $`npx snarkjs g16s ${r1csRel} ${ptau2Rel} ${zkeyRel}`.cwd(BUILD_DIR).quiet();
+  if (!existsSync(ZKEY_INITIAL) || statSync(ZKEY_INITIAL).size === 0) {
+    console.error("Error: groth16 setup did not produce a valid zkey file. Run without .quiet() to see snarkjs output.");
+    process.exit(1);
+  }
   console.log("Wrote", ZKEY_INITIAL);
 
   let zkeyForVkey = ZKEY_INITIAL;
