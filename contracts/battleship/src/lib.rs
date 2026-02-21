@@ -396,6 +396,26 @@ impl BattleshipContract {
         load_game(&env, &key)
     }
 
+    /// Notify the Game Hub that the game has ended. Idempotent; safe to call when the game
+    /// is already in Ended state (e.g. if hub was not notified during resolve_shot).
+    pub fn notify_game_ended_to_hub(env: Env, session_id: u32) -> Result<(), Error> {
+        let key = DataKey::Game(session_id);
+        let game = load_game(&env, &key)?;
+        if game.phase != GamePhase::Ended {
+            return Err(Error::InvalidPhase);
+        }
+        let winner = game.winner.ok_or(Error::InvalidPhase)?;
+        let game_hub_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::GameHubAddress)
+            .expect("GameHub address not set");
+        let game_hub = GameHubClient::new(&env, &game_hub_addr);
+        let player1_won = winner == game.player1;
+        game_hub.end_game(&session_id, &player1_won);
+        Ok(())
+    }
+
     pub fn get_rules(_env: Env) -> GameRules {
         GameRules {
             board_size: BOARD_SIZE,

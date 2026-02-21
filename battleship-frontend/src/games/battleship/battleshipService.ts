@@ -67,6 +67,32 @@ export class BattleshipService {
   }
 
   /**
+   * Notify the Game Hub that the game has ended. Idempotent; safe to call when the game
+   * is already in Ended state. Ensures end_game is called on the hub (e.g. if it wasn't during resolve_shot).
+   */
+  async notifyGameEndedToHub(
+    sessionId: number,
+    callerAddress: string,
+    signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>
+  ): Promise<{ txHash?: string }> {
+    const client = this.createSigningClient(callerAddress, signer);
+    const tx = await client.notify_game_ended_to_hub(
+      { session_id: sessionId },
+      DEFAULT_METHOD_OPTIONS
+    );
+    const validUntilLedgerSeq = await calculateValidUntilLedger(RPC_URL, DEFAULT_AUTH_TTL_MINUTES);
+    const sentTx = await signAndSendViaLaunchtube(tx, DEFAULT_METHOD_OPTIONS.timeoutInSeconds, validUntilLedgerSeq);
+    if (sentTx.getTransactionResponse?.status === 'FAILED') {
+      const errorMessage = this.extractErrorFromDiagnostics(sentTx.getTransactionResponse);
+      throw new Error(`Transaction failed: ${errorMessage}`);
+    }
+    const txHash =
+      (sentTx as { sendTransactionResponse?: { hash?: string } }).sendTransactionResponse?.hash ??
+      (sentTx.getTransactionResponse as { txHash?: string } | undefined)?.txHash;
+    return { txHash };
+  }
+
+  /**
    * Start a new game (requires multi-sig authorization)
    * Note: This requires both players to sign the transaction
    */

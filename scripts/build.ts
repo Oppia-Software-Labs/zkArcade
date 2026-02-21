@@ -73,7 +73,9 @@ const contractsToBuild = selection.contracts;
 for (const contract of contractsToBuild) {
   console.log(`Building ${contract.packageName}...`);
   try {
-    await $`stellar contract build --manifest-path ${contract.manifestPath}`;
+    // Output wasm to workspace target so bindings can use it (stellar often uses a temp cargo target otherwise)
+    const outDir = contract.wasmPath.replace(/\/[^/]+\.wasm$/, '');
+    await $`stellar contract build --manifest-path ${contract.manifestPath} --out-dir ${outDir}`;
     console.log(`✅ ${contract.packageName} built\n`);
   } catch (error) {
     console.error(`❌ Failed to build ${contract.packageName}:`, error);
