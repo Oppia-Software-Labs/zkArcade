@@ -168,3 +168,531 @@ select:focus {
   background-clip: text;
   color: transparent;
 }
+
+/* ─── Home page ─── */
+
+.home-page {
+  position: relative;
+  min-height: 100vh;
+  background: #141414;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.home-bg-glow {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(140px);
+  opacity: 0.18;
+  pointer-events: none;
+  animation: home-float 18s ease-in-out infinite;
+}
+
+.home-bg-glow-1 {
+  width: 500px;
+  height: 500px;
+  top: -15%;
+  left: -8%;
+  background: radial-gradient(circle, rgba(220, 38, 38, 0.5), transparent 70%);
+}
+
+.home-bg-glow-2 {
+  width: 400px;
+  height: 400px;
+  bottom: -20%;
+  right: -5%;
+  background: radial-gradient(circle, rgba(220, 38, 38, 0.3), transparent 70%);
+  animation-delay: -9s;
+}
+
+.home-content {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6rem;
+  padding: 2rem;
+  max-width: 1100px;
+  width: 100%;
+}
+
+.home-logo {
+  width: clamp(260px, 32vw, 480px);
+  animation: home-fade-in-left 0.8s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.home-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+/* Military button */
+
+.mil-btn {
+  position: relative;
+  min-width: 260px;
+  padding: 1rem 1.6rem 1rem 2rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-left: 3px solid #dc2626;
+  border-radius: 3px;
+  background: #232323;
+  color: #e5e5e5;
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.15s ease;
+  animation: home-fade-in-right 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.mil-btn:hover {
+  background: #2c2c2c;
+  border-left-color: #ef4444;
+  box-shadow:
+    0 0 20px rgba(220, 38, 38, 0.1),
+    inset 0 0 30px rgba(220, 38, 38, 0.03);
+  transform: translateX(2px);
+}
+
+.mil-btn:active {
+  background: #1e1e1e;
+  transform: translateX(0);
+}
+
+.mil-btn-sub {
+  font-size: 0.65rem;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  color: #888;
+}
+
+.mil-btn-delay-1 { animation-delay: 0.15s; }
+.mil-btn-delay-2 { animation-delay: 0.3s; }
+.mil-btn-delay-3 { animation-delay: 0.45s; }
+
+/* Load game inline input */
+
+.home-load-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+  animation: home-fade-in-right 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.home-load-input {
+  flex: 1;
+  padding: 0.7rem 0.9rem;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-left: 3px solid #dc2626;
+  background: #1e1e1e;
+  color: #e5e5e5;
+  font-size: 0.85rem;
+  font-family: var(--font-mono, monospace);
+  outline: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  min-width: 0;
+}
+
+.home-load-input::placeholder {
+  color: rgba(255, 255, 255, 0.3);
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+}
+
+.home-load-input:focus {
+  border-color: rgba(220, 38, 38, 0.4);
+  box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.1);
+}
+
+.home-load-go {
+  padding: 0.7rem 1.2rem;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #dc2626;
+  color: #fff;
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.home-load-go:hover {
+  background: #ef4444;
+}
+
+.home-load-go:active {
+  background: #b91c1c;
+}
+
+/* ─── Game page (full-screen) ─── */
+
+.game-page {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  background: #0a0e17;
+  overflow: hidden;
+}
+
+.game-3d {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.game-loading-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  background: #0a0e17;
+  z-index: 10;
+  color: #ccc;
+  font-size: 0.9rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.game-loading-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid rgba(255, 255, 255, 0.1);
+  border-top-color: #dc2626;
+  border-radius: 50%;
+  animation: hud-spin 0.8s linear infinite;
+}
+
+/* HUD overlays */
+
+.game-hud-top {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  pointer-events: none;
+}
+
+.game-hud-top > * {
+  pointer-events: auto;
+}
+
+.game-hud-session {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.35);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.3rem 0.6rem;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 2px;
+}
+
+.game-hud-switch {
+  padding: 0.45rem 0.9rem;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+  color: rgba(255, 255, 255, 0.7);
+  font-family: var(--font-body);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+.game-hud-switch:hover {
+  background: rgba(220, 38, 38, 0.2);
+  border-color: rgba(220, 38, 38, 0.4);
+  color: #fff;
+}
+
+.game-hud-switch:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.game-hud-bottom {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  z-index: 20;
+  padding: 1.25rem;
+  max-width: 380px;
+  pointer-events: auto;
+}
+
+.hud-panel {
+  background: rgba(10, 14, 23, 0.85);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-left: 3px solid #dc2626;
+  border-radius: 3px;
+  padding: 1rem 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  color: #d4d4d4;
+  font-size: 0.8rem;
+}
+
+.hud-panel-title {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #dc2626;
+}
+
+.hud-panel-status {
+  font-size: 0.78rem;
+  color: rgba(255, 255, 255, 0.6);
+  line-height: 1.4;
+}
+
+.hud-panel-status strong {
+  color: #fff;
+  font-weight: 600;
+}
+
+.hud-panel-scores {
+  display: flex;
+  gap: 0.75rem;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.7rem;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.hud-panel-scores .active {
+  color: #dc2626;
+  font-weight: 600;
+}
+
+.hud-input {
+  padding: 0.45rem 0.6rem;
+  border-radius: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+  color: #e5e5e5;
+  font-size: 0.78rem;
+  font-family: var(--font-mono, monospace);
+  outline: none;
+  width: 100%;
+  transition: border-color 0.2s ease;
+}
+
+.hud-input:focus {
+  border-color: rgba(220, 38, 38, 0.4);
+}
+
+.hud-btn {
+  padding: 0.55rem 1rem;
+  border-radius: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: #dc2626;
+  color: #fff;
+  font-family: var(--font-body);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.hud-btn:hover { background: #ef4444; }
+.hud-btn:active { background: #b91c1c; }
+.hud-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.hud-btn-secondary {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.hud-btn-secondary:hover { background: rgba(255, 255, 255, 0.14); }
+
+/* Game over overlay */
+
+.game-over-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  background: rgba(10, 14, 23, 0.9);
+  backdrop-filter: blur(8px);
+  z-index: 30;
+  color: #e5e5e5;
+  animation: hud-fade-in 0.4s ease both;
+}
+
+.game-over-overlay h3 {
+  font-size: 2rem;
+  font-family: var(--font-body);
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #fff;
+}
+
+.game-over-overlay p {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 0.85rem;
+  font-family: var(--font-mono, monospace);
+}
+
+/* ─── Toast ─── */
+
+.toast-container {
+  position: fixed;
+  top: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: center;
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
+  padding: 0.7rem 1.2rem;
+  background: rgba(10, 14, 23, 0.92);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-left: 3px solid #dc2626;
+  border-radius: 3px;
+  color: #d4d4d4;
+  font-size: 0.8rem;
+  font-weight: 500;
+  max-width: 500px;
+  animation: toast-in 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.toast a {
+  color: #ef4444;
+  text-decoration: underline;
+  font-weight: 600;
+}
+
+.toast a:hover {
+  color: #f87171;
+}
+
+.toast-error {
+  border-left-color: #ef4444;
+  color: #fca5a5;
+}
+
+.toast-success {
+  border-left-color: #22c55e;
+}
+
+.toast-exit {
+  animation: toast-out 0.3s ease both;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(-12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes toast-out {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(-12px); }
+}
+
+@keyframes hud-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes hud-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ─── Shared keyframes ─── */
+
+@keyframes home-fade-in-left {
+  from { opacity: 0; transform: translateX(-40px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes home-fade-in-right {
+  from { opacity: 0; transform: translateX(40px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes home-float {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(20px, 15px) scale(1.05); }
+}
+
+@media (max-width: 768px) {
+  .home-content {
+    flex-direction: column;
+    gap: 3rem;
+    text-align: center;
+  }
+
+  .home-logo {
+    width: clamp(200px, 70vw, 360px);
+    animation-name: home-fade-in-up;
+  }
+
+  .mil-btn {
+    min-width: 220px;
+    animation-name: home-fade-in-up;
+  }
+
+  .home-load-row {
+    animation-name: home-fade-in-up;
+  }
+
+  .game-hud-bottom {
+    max-width: 100%;
+    padding: 0.75rem;
+  }
+
+  @keyframes home-fade-in-up {
+    from { opacity: 0; transform: translateY(30px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+}

@@ -7,4 +7,5 @@ declare module 'react-router-dom' {
     element?: ReactNode;
     children?: ReactNode;
   }): JSX.Element;
+  export function useNavigate(): (to: string, options?: { replace?: boolean }) => void;
 }

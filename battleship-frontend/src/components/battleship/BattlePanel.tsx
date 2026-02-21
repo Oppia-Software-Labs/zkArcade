@@ -25,75 +25,42 @@ export function BattlePanel({
 }: BattlePanelProps) {
   if (!gameState) return null;
 
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <div style={{ display: 'flex', gap: 12 }}>
-          <div
-            style={{
-              flex: 1,
-              padding: '8px 12px',
-              borderRadius: 8,
-              border: `2px solid ${isPlayer1 ? '#a78bfa' : '#e5e7eb'}`,
-              background: isPlayer1 ? '#f5f3ff' : '#fff',
-            }}
-          >
-            <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase' }}>Player 1</div>
-            <div style={{ fontFamily: 'monospace', fontSize: 13 }}>
-              {gameState.player1.slice(0, 8)}...{gameState.player1.slice(-4)}
-            </div>
-            <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
-              Hits: {gameState.hits_on_p1} &middot; Sunk: {gameState.sunk_ships_on_p1}
-            </div>
-          </div>
-          <div
-            style={{
-              flex: 1,
-              padding: '8px 12px',
-              borderRadius: 8,
-              border: `2px solid ${isPlayer2 ? '#a78bfa' : '#e5e7eb'}`,
-              background: isPlayer2 ? '#f5f3ff' : '#fff',
-            }}
-          >
-            <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase' }}>Player 2</div>
-            <div style={{ fontFamily: 'monospace', fontSize: 13 }}>
-              {gameState.player2.slice(0, 8)}...{gameState.player2.slice(-4)}
-            </div>
-            <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
-              Hits: {gameState.hits_on_p2} &middot; Sunk: {gameState.sunk_ships_on_p2}
-            </div>
-          </div>
-        </div>
+  let statusText = '';
+  if (hasPendingShot && iAmDefender) {
+    statusText = loading ? 'Generating ZK proof & resolving...' : 'Auto-resolving incoming shot...';
+  } else if (hasPendingShot && !iAmDefender) {
+    statusText = 'Shot submitted. Switch wallets to resolve as defender.';
+  } else if (!hasPendingShot && isMyTurn) {
+    statusText = 'Your turn — click opponent grid to fire.';
+  } else if (!hasPendingShot && !isMyTurn && (isPlayer1 || isPlayer2)) {
+    statusText = "Opponent's turn. Switch wallets to play as the other player.";
+  }
 
-        {hasPendingShot && iAmDefender && (
-          <p className="text-sm" style={{ color: '#92400e', fontWeight: 600 }}>
-            {loading ? 'Generating ZK proof & resolving...' : 'Auto-resolving incoming shot...'}
-          </p>
-        )}
-        {hasPendingShot && !iAmDefender && (
-          <p className="text-sm" style={{ color: '#1d4ed8' }}>
-            Shot submitted. Switch wallets to resolve as defender.
-          </p>
-        )}
-        {!hasPendingShot && isMyTurn && (
-          <p className="text-sm" style={{ color: '#1d4ed8', fontWeight: 600 }}>
-            Your turn — click the opponent&apos;s grid (right) to fire.
-          </p>
-        )}
-        {!hasPendingShot && !isMyTurn && (isPlayer1 || isPlayer2) && (
-          <p className="text-sm" style={{ color: '#6b7280' }}>
-            Opponent&apos;s turn. Switch wallets to play as the other player.
-          </p>
-        )}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, alignItems: 'center', marginTop: 2 }}>
-          <div style={{ fontSize: 12, color: '#4b5563' }}>
-            {myPendingShot
-              ? `Selected target: (${myPendingShot.x}, ${myPendingShot.y})`
-              : 'No target selected yet. Fire by clicking a tile on opponent grid.'}
-          </div>
-          <button type="button" className="btn secondary" disabled style={{ opacity: 0.9 }}>
-            {fireStatusLabel}
-          </button>
-        </div>
+  return (
+    <div className="hud-panel">
+      <div className="hud-panel-title">Battle</div>
+
+      <div className="hud-panel-scores">
+        <span className={isPlayer1 ? 'active' : ''}>
+          P1: {gameState.hits_on_p1}H / {gameState.sunk_ships_on_p1}S
+        </span>
+        <span className={isPlayer2 ? 'active' : ''}>
+          P2: {gameState.hits_on_p2}H / {gameState.sunk_ships_on_p2}S
+        </span>
+      </div>
+
+      {statusText && (
+        <div className="hud-panel-status">{statusText}</div>
+      )}
+
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
+        <span style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.4)', fontFamily: 'var(--font-mono, monospace)' }}>
+          {myPendingShot ? `TARGET (${myPendingShot.x},${myPendingShot.y})` : 'NO TARGET'}
+        </span>
+        <span className="hud-btn hud-btn-secondary" style={{ cursor: 'default', fontSize: '0.65rem' }}>
+          {fireStatusLabel}
+        </span>
+      </div>
     </div>
   );
 }

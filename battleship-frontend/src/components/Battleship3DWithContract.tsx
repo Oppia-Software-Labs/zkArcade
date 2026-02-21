@@ -1,16 +1,20 @@
 import { useRef, useEffect } from 'react';
-import { Link } from 'react-router';
-import { Layout } from './Layout';
+import { Link, useSearchParams } from 'react-router';
 import { init } from '../battleship3d/main';
 import { useBattleshipContract } from './battleship/useBattleshipContract';
-import { CreateSessionPanel } from './battleship/CreateSessionPanel';
 import { PlacementPanel } from './battleship/PlacementPanel';
 import { BattlePanel } from './battleship/BattlePanel';
+import { useToast, ToastContainer } from './Toast';
+import { WalletSwitcher } from './WalletSwitcher';
 
 export function Battleship3DWithContract() {
   const containerRef = useRef<HTMLDivElement>(null);
   const initResultRef = useRef<ReturnType<typeof init> | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const autoTriggeredRef = useRef(false);
+  const pendingAutoLoadRef = useRef(false);
 
+  const { toasts, addToast } = useToast();
   const contract = useBattleshipContract(initResultRef);
 
   const {
@@ -38,7 +42,6 @@ export function Battleship3DWithContract() {
     quickstartAvailable,
     isConnecting,
     walletType,
-    loadGameState,
     handleQuickstart,
     handleLoadGame,
     handleCommitBoard,
@@ -47,6 +50,52 @@ export function Battleship3DWithContract() {
     onFire,
     playerSwitchPendingRef,
   } = contract;
+
+  // Surface error / success as toasts
+  const prevErrorRef = useRef<string | null>(null);
+  const prevSuccessRef = useRef<{ message: string; txHash?: string } | null>(null);
+
+  useEffect(() => {
+    if (error && error !== prevErrorRef.current) {
+      addToast(error, 'error');
+    }
+    prevErrorRef.current = error;
+  }, [error]);
+
+  useEffect(() => {
+    if (success && success !== prevSuccessRef.current) {
+      addToast(success.message, 'success', success.txHash);
+    }
+    prevSuccessRef.current = success;
+  }, [success]);
+
+  // Auto-trigger quickstart or load from URL query params
+  useEffect(() => {
+    if (autoTriggeredRef.current || gamePhase !== 'create') return;
+    const mode = searchParams.get('mode');
+    if (!mode) return;
+
+    if (mode === 'quickstart' && quickstartAvailable && userAddress) {
+      autoTriggeredRef.current = true;
+      setSearchParams({}, { replace: true });
+      handleQuickstart();
+    } else if (mode === 'load') {
+      const sid = searchParams.get('session');
+      if (sid && userAddress) {
+        autoTriggeredRef.current = true;
+        pendingAutoLoadRef.current = true;
+        setSearchParams({}, { replace: true });
+        setLoadSessionId(sid);
+      }
+    }
+  }, [gamePhase, searchParams, quickstartAvailable, userAddress]);
+
+  useEffect(() => {
+    if (pendingAutoLoadRef.current && loadSessionId) {
+      pendingAutoLoadRef.current = false;
+      handleLoadGame();
+    }
+  }, [loadSessionId]);
 
   // Sync contract state into 3D when in battle
   useEffect(() => {
@@ -114,114 +163,93 @@ export function Battleship3DWithContract() {
   }, []);
 
   return (
-    <Layout title="Battleship 3D" subtitle="Two-player on-chain">
-      <div className="studio-main" style={{ display: 'flex', flexDirection: 'column', minHeight: '60vh' }}>
-        {error && (
-          <div className="notice error" style={{ marginBottom: 8 }}>
-            {error}
-          </div>
-        )}
-        {success && (
-          <div className="notice info" style={{ marginBottom: 8 }}>
-            {success.message}
-            {success.txHash && (
-              <>
-                {' '}
-                <a
-                  href={`https://stellar.expert/explorer/testnet/tx/${success.txHash}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{ color: '#2563eb', textDecoration: 'underline', fontWeight: 600 }}
-                >
-                  View on Stellar Expert
-                </a>
-              </>
-            )}
-          </div>
-        )}
+    <div className="game-page">
+      <ToastContainer toasts={toasts} />
 
-        {gamePhase === 'create' && (
-          <CreateSessionPanel
-            userAddress={userAddress}
-            quickstartAvailable={quickstartAvailable}
-            loading={loading}
-            loadSessionId={loadSessionId}
-            setLoadSessionId={setLoadSessionId}
-            onQuickstart={handleQuickstart}
-            onLoadGame={handleLoadGame}
-          />
-        )}
+      {/* 3D canvas fills entire screen */}
+      <div ref={containerRef} className="game-3d" />
 
-        {(gamePhase === 'placement' || gamePhase === 'battle') && (
-          <>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-              <span style={{ fontSize: 12, color: '#6b7280' }}>Session {sessionId}</span>
-              <button
-                type="button"
-                onClick={handleSwitchPlayer}
-                disabled={loading || isConnecting || walletType !== 'dev'}
-                className="btn secondary"
-              >
-                {isConnecting ? 'Switching...' : 'Switch Player'}
-              </button>
-            </div>
-            <div
-              ref={containerRef}
-              style={{
-                width: '100%',
-                height: 'min(70vh, 560px)',
-                minHeight: 320,
-                background: '#0f172a',
-                borderRadius: 12,
-                overflow: 'hidden',
-              }}
+      {/* Create phase: connect wallet then auto quickstart or show status */}
+      {gamePhase === 'create' && (
+        <div className="game-loading-overlay">
+          {loading ? (
+            <>
+              <div className="game-loading-spinner" />
+              <span>Setting up game...</span>
+            </>
+          ) : (
+            <>
+              <WalletSwitcher />
+              <span style={{ marginTop: '0.5rem', fontSize: '0.75rem', opacity: 0.7 }}>
+                {userAddress ? 'Starting quickstart...' : 'Connect dev wallet to continue'}
+              </span>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* HUD: top bar */}
+      {(gamePhase === 'placement' || gamePhase === 'battle') && (
+        <div className="game-hud-top">
+          <span className="game-hud-session">Session {sessionId}</span>
+          <button
+            type="button"
+            onClick={handleSwitchPlayer}
+            disabled={loading || isConnecting || walletType !== 'dev'}
+            className="game-hud-switch"
+          >
+            {isConnecting ? 'Switching...' : 'Switch Player'}
+          </button>
+        </div>
+      )}
+
+      {/* HUD: bottom-left panels */}
+      {(gamePhase === 'placement' || gamePhase === 'battle') && (
+        <div className="game-hud-bottom">
+          {gamePhase === 'placement' && (
+            <PlacementPanel
+              gameState={gameState}
+              isPlayer1={isPlayer1}
+              isPlayer2={isPlayer2}
+              haveICommittedBoard={haveICommittedBoard}
+              placementFrom3D={placementFrom3D}
+              mySalt={mySalt}
+              setMySalt={setMySalt}
+              loading={loading}
+              onCommitBoard={handleCommitBoard}
             />
-            <div className="card" style={{ marginTop: 16, maxWidth: 560 }}>
-              {gamePhase === 'placement' && (
-                <PlacementPanel
-                  gameState={gameState}
-                  isPlayer1={isPlayer1}
-                  isPlayer2={isPlayer2}
-                  haveICommittedBoard={haveICommittedBoard}
-                  placementFrom3D={placementFrom3D}
-                  mySalt={mySalt}
-                  setMySalt={setMySalt}
-                  loading={loading}
-                  onCommitBoard={handleCommitBoard}
-                />
-              )}
-              {gamePhase === 'battle' && (
-                <BattlePanel
-                  gameState={gameState}
-                  isPlayer1={isPlayer1}
-                  isPlayer2={isPlayer2}
-                  hasPendingShot={hasPendingShot}
-                  iAmDefender={iAmDefender}
-                  isMyTurn={isMyTurn}
-                  loading={loading}
-                  myPendingShot={myPendingShot}
-                  fireStatusLabel={fireStatusLabel}
-                />
-              )}
-            </div>
-          </>
-        )}
+          )}
+          {gamePhase === 'battle' && (
+            <BattlePanel
+              gameState={gameState}
+              isPlayer1={isPlayer1}
+              isPlayer2={isPlayer2}
+              hasPendingShot={hasPendingShot}
+              iAmDefender={iAmDefender}
+              isMyTurn={isMyTurn}
+              loading={loading}
+              myPendingShot={myPendingShot}
+              fireStatusLabel={fireStatusLabel}
+            />
+          )}
+        </div>
+      )}
 
-        {gamePhase === 'ended' && gameState && (
-          <div className="card">
-            <h3>Game Over</h3>
-            {gameState.winner != null && gameState.winner !== '' && (
-              <p className="mt-2">
-                Winner: {gameState.winner.slice(0, 12)}...{gameState.winner.slice(-4)}
-                {gameState.winner === userAddress && ' (You!)'}
-              </p>
-            )}
-            <Link to="/" style={{ display: 'inline-block', marginTop: 12, fontSize: 14 }}>
-              ← Back
-            </Link>
-          </div>
-        )}
-      </div>
-    </Layout>
+      {/* Game over overlay */}
+      {gamePhase === 'ended' && gameState && (
+        <div className="game-over-overlay">
+          <h3>Game Over</h3>
+          {gameState.winner != null && gameState.winner !== '' && (
+            <p>
+              Winner: {gameState.winner.slice(0, 12)}...{gameState.winner.slice(-4)}
+              {gameState.winner === userAddress && ' (You!)'}
+            </p>
+          )}
+          <Link to="/" className="mil-btn" style={{ minWidth: 'auto', animationDelay: '0s' }}>
+            Back to Menu
+          </Link>
+        </div>
+      )}
+    </div>
   );
 }
