@@ -27,6 +27,9 @@ const NETWORK_PASSPHRASE = "Test SDF Network ; September 2015";
 const ROOT = import.meta.dir + "/..";
 const VKEY_SOROBAN_PATH = join(ROOT, "circuits", "build", "vkey_soroban.json");
 
+// Required Game Hub for submissions (Stellar Testnet); battleship must call start_game/end_game on this.
+const GAME_HUB_TESTNET_ID = "CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG";
+
 const CONTRACTS = [
   { packageName: "circom-groth16-verifier", wasmName: "circom_groth16_verifier" },
   { packageName: "battleship-verifier-adapter", wasmName: "battleship_verifier_adapter" },
@@ -64,9 +67,12 @@ async function main() {
   };
 
   const adminAddress = deployment.wallets?.admin;
-  const mockGameHubId = deployment.mockGameHubId ?? deployment.contracts?.["mock-game-hub"];
-  if (!adminAddress || !mockGameHubId) {
-    console.error("❌ deployment.json must contain wallets.admin and mockGameHubId (or contracts['mock-game-hub']).");
+  const mockGameHubId =
+    deployment.mockGameHubId ??
+    deployment.contracts?.["mock-game-hub"] ??
+    GAME_HUB_TESTNET_ID;
+  if (!adminAddress) {
+    console.error("❌ deployment.json must contain wallets.admin.");
     process.exit(1);
   }
 

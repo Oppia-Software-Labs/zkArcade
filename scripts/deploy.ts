@@ -60,6 +60,7 @@ const Keypair = await loadKeypairFactory();
 const NETWORK = 'testnet';
 const RPC_URL = 'https://soroban-testnet.stellar.org';
 const NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015';
+// Required Game Hub for submissions: contracts must call start_game() and end_game() on this hub.
 const EXISTING_GAME_HUB_TESTNET_CONTRACT_ID = 'CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG';
 
 async function testnetAccountExists(address: string): Promise<boolean> {
