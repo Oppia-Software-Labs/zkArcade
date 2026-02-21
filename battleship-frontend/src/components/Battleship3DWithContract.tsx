@@ -6,6 +6,7 @@ import { PlacementPanel } from './battleship/PlacementPanel';
 import { BattlePanel } from './battleship/BattlePanel';
 import { useToast, ToastContainer } from './Toast';
 import { WalletSwitcher } from './WalletSwitcher';
+import { decodeShotBitmap } from '../games/battleship/shotUtils';
 
 export function Battleship3DWithContract() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -103,6 +104,8 @@ export function Battleship3DWithContract() {
     const setContractState = initResultRef.current?.setContractState;
     if (!setContractState || gamePhase !== 'battle') return;
     const effectivePendingShot = hasPendingShot || myPendingShot != null;
+    const incomingBitmap = gameState && isPlayer1 ? gameState.shots_p2_to_p1 : gameState && isPlayer2 ? gameState.shots_p1_to_p2 : BigInt(0);
+    const resolvedShotsOnMyBoard = gameState ? decodeShotBitmap(incomingBitmap) : new Set<string>();
     setContractState({
       phase: 'battle',
       isMyTurn: isMyTurn && !effectivePendingShot,
@@ -112,6 +115,7 @@ export function Battleship3DWithContract() {
       pendingShotY: gameState?.pending_shot_y,
       myPendingShot,
       resolvedHitsOnMyBoard: contract.resolvedHitsOnMyBoard,
+      resolvedShotsOnMyBoard,
       myShotsOnOpponent: contract.myShotsOnOpponent,
     });
   }, [
@@ -120,8 +124,9 @@ export function Battleship3DWithContract() {
     hasPendingShot,
     iAmDefender,
     myPendingShot,
-    gameState?.pending_shot_x,
-    gameState?.pending_shot_y,
+    gameState,
+    isPlayer1,
+    isPlayer2,
     contract.resolvedHitsOnMyBoard,
     contract.myShotsOnOpponent,
     contractSyncTrigger,

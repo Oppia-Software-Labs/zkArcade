@@ -1,5 +1,15 @@
 import type { Game } from '../../games/battleship/bindings';
 
+function popcount(n: number | bigint): number {
+  let v = Number(n) >>> 0;
+  let c = 0;
+  while (v) {
+    c += v & 1;
+    v >>>= 1;
+  }
+  return c;
+}
+
 interface BattlePanelProps {
   gameState: Game | null;
   isPlayer1: boolean;
@@ -42,10 +52,10 @@ export function BattlePanel({
 
       <div className="hud-panel-scores">
         <span className={isPlayer1 ? 'active' : ''}>
-          P1: {gameState.hits_on_p1}H / {gameState.sunk_ships_on_p1}S
+          P1: {gameState.hits_on_p1}H / {popcount(gameState.sunk_ships_on_p1)}S
         </span>
         <span className={isPlayer2 ? 'active' : ''}>
-          P2: {gameState.hits_on_p2}H / {gameState.sunk_ships_on_p2}S
+          P2: {gameState.hits_on_p2}H / {popcount(gameState.sunk_ships_on_p2)}S
         </span>
       </div>
 

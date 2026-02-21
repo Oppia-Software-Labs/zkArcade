@@ -31,6 +31,8 @@ export interface ContractModeState {
   myPendingShot?: { x: number; y: number } | null;
   /** Keys "x,y" (col,row) for cells hit on my board. */
   resolvedHitsOnMyBoard?: Set<string> | string[];
+  /** Keys "x,y" for all cells shot at on my board (hits + misses). Used to show misses gray. */
+  resolvedShotsOnMyBoard?: Set<string> | string[];
   /** Keys "x,y" -> { hit, sunkShip } for my shots on opponent. */
   myShotsOnOpponent?: Record<string, { hit: boolean; sunkShip: number }>;
 }
@@ -169,17 +171,21 @@ function buildShipPositionsFromShips(): ShipPositions {
 }
 
 function applyContractStateToTiles(): void {
-  const resolvedSet =
+  const resolvedHitsSet =
     contractState.resolvedHitsOnMyBoard instanceof Set
       ? contractState.resolvedHitsOnMyBoard
       : new Set(contractState.resolvedHitsOnMyBoard ?? []);
+  const resolvedShotsSet =
+    contractState.resolvedShotsOnMyBoard instanceof Set
+      ? contractState.resolvedShotsOnMyBoard
+      : new Set(contractState.resolvedShotsOnMyBoard ?? []);
 
-  // Player grid (my board): show ships green, resolved hits red/gray,
-  // and any incoming pending shot as amber
+  // Player grid (my board): hits red, misses gray, ships green, pending shot amber
   for (let row = 0; row < GRID_SIZE; row++) {
     for (let col = 0; col < GRID_SIZE; col++) {
       const key = `${col},${row}`;
-      const hit = resolvedSet.has(key);
+      const isShotCell = resolvedShotsSet.has(key);
+      const isHit = resolvedHitsSet.has(key);
       const hasShip = gameState.grid[row][col].hasShip;
 
       const isIncoming =
@@ -188,31 +194,34 @@ function applyContractStateToTiles(): void {
         contractState.pendingShotX === col &&
         contractState.pendingShotY === row;
 
-      if (isIncoming && !hit) {
+      if (isIncoming && !isShotCell) {
         setTilePending(gameState.grid[row][col].mesh);
+      } else if (isShotCell) {
+        setTileColor(gameState.grid[row][col].mesh, true, isHit, true);
       } else {
-        setTileColor(gameState.grid[row][col].mesh, hit, hasShip, true);
+        setTileColor(gameState.grid[row][col].mesh, false, hasShip, true);
       }
     }
   }
 
-  // AI grid (opponent's board): resolved shots red/gray,
-  // local pending shot amber
+  // Opponent grid: my shots — hit = red, miss = gray; pending shot amber
   const myShots = contractState.myShotsOnOpponent ?? {};
   const pending = contractState.myPendingShot;
   for (let row = 0; row < GRID_SIZE; row++) {
     for (let col = 0; col < GRID_SIZE; col++) {
       const key = `${col},${row}`;
       const result = myShots[key];
-      const hit = result !== undefined;
-      const hasShip = result?.hit ?? false;
+      const shotResolved = result !== undefined;
+      const isHit = result?.hit ?? false;
 
-      const isPending = pending && pending.x === col && pending.y === row && !hit;
+      const isPending = pending && pending.x === col && pending.y === row && !shotResolved;
 
       if (isPending) {
         setTilePending(gameState.aiGrid[row][col].mesh);
+      } else if (shotResolved) {
+        setTileColor(gameState.aiGrid[row][col].mesh, true, isHit);
       } else {
-        setTileColor(gameState.aiGrid[row][col].mesh, hit, hasShip);
+        setTileColor(gameState.aiGrid[row][col].mesh, false, false);
       }
     }
   }
