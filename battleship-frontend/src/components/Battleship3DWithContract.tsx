@@ -1,5 +1,6 @@
 import { useRef, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router';
+import { config } from '../config';
 import { init } from '../battleship3d/main';
 import { useBattleshipContract } from './battleship/useBattleshipContract';
 import { PlacementPanel } from './battleship/PlacementPanel';
@@ -256,6 +257,19 @@ export function Battleship3DWithContract() {
               Winner: {gameState.winner.slice(0, 12)}...{gameState.winner.slice(-4)}
               {gameState.winner === userAddress && ' (You!)'}
             </p>
+          )}
+          {gameState.winner === userAddress && (
+            <a
+              href={`https://twitter.com/intent/tweet?text=${encodeURIComponent(
+                `I won zkBattleship by Oppia, test it out at ${config.appDomain || window.location.origin}`
+              )}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mil-btn"
+              style={{ minWidth: 'auto', animationDelay: '0.1s', textDecoration: 'none' }}
+            >
+              Share on X
+            </a>
           )}
           <Link to="/" className="mil-btn" style={{ minWidth: 'auto', animationDelay: '0s' }}>
             Back to Menu

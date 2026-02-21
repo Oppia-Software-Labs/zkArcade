@@ -88,12 +88,12 @@ pub trait GameHub {
 ## Config and Production
 
 - **Runtime config:** Frontend reads contract IDs and RPC from `battleship-frontend/public/game-studio-config.js` (or env at build time). Update this for production.
+- **Share link domain:** Set `VITE_APP_DOMAIN` (e.g. `https://zkbattleship.vercel.app`) so the winner’s “Share on X” button uses your production URL. If unset, the current origin is used.
 - **Secrets:** `.env` holds dev wallet secrets and is not committed. Never commit secret keys.
 
 ## Links
 
 - [Stellar / Soroban docs](https://developers.stellar.org/)
-- [RISC Zero](https://risczero.com/) (related ZK tooling)
 
 ## License
 
