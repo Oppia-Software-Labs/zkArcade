@@ -704,8 +704,8 @@ export function init(container: HTMLElement, options?: InitOptions): InitResult 
   renderer = setup.renderer;
   controls = setup.controls;
 
-  gameState.grid = createGrid(scene, 0, playerOffsetZ);
-  gameState.aiGrid = createGrid(scene, 0, 0, 'vertical');
+  gameState.grid = createGrid(scene, 0, playerOffsetZ); // (0,0) top-left, (9,9) bottom-right
+  gameState.aiGrid = createGrid(scene, 0, 0, 'vertical'); // same orientation
   gameState.state = 'PLACEMENT';
   gameState.ships = [];
   gameState.aiShips = [];

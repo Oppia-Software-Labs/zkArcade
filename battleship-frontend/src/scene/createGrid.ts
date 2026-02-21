@@ -15,15 +15,20 @@ const PENDING = 0xf59e0b;
  * Creates a 10x10 Battleship grid of clickable tiles.
  * Uses BoxGeometry so tiles are visible 3D blocks above the ocean.
  * @param orientation - 'horizontal' = flat on XZ plane; 'vertical' = standing in YZ plane facing -X
+ * @param flip180 - when true, (0,0) is at bottom-right and (9,9) at top-left; when false, (0,0) is bottom-left (row 0 = bottom, col 0 = left)
  */
 export function createGrid(
   scene: THREE.Scene,
   offsetX = 0,
   offsetZ = 0,
-  orientation: 'horizontal' | 'vertical' = 'horizontal'
+  orientation: 'horizontal' | 'vertical' = 'horizontal',
+  flip180 = false
 ): GridCell[][] {
   const grid: GridCell[][] = [];
   const cellOffset = (GRID_SIZE - 1) / 2;
+  const px = (c: number) => (flip180 ? 9 - c : c);
+  // row 0 = bottom so (0,0) is bottom-left
+  const pz = (r: number) => 9 - r;
 
   for (let row = 0; row < GRID_SIZE; row++) {
     grid[row] = [];
@@ -41,13 +46,14 @@ export function createGrid(
       const mesh = new THREE.Mesh(geometry, material);
       if (orientation === 'horizontal') {
         mesh.position.set(
-          offsetX + col - cellOffset,
+          offsetX + px(col) - cellOffset,
           TILE_HEIGHT / 2 + 0.02,
-          offsetZ + row - cellOffset
+          offsetZ + pz(row) - cellOffset
         );
       } else {
+        // vertical: row 0 = bottom (min Y) so (0,0) is bottom-left
         mesh.position.set(
-          offsetX + col - cellOffset,
+          offsetX + px(col) - cellOffset,
           row + 0.5,
           offsetZ
         );

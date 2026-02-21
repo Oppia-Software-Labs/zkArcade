@@ -572,9 +572,13 @@ export function useBattleshipContract(initResultRef: InitResultRef) {
         currentSigner()
       );
       if (isHit) setResolvedHitsOnMyBoard((prev) => new Set(prev).add(`${shotX},${shotY}`));
+      setMyPendingShot(null);
       const msg = isHit ? (sunkShip ? 'Hit! Ship sunk.' : 'Hit!') : 'Miss.';
       setSuccess({ message: `Resolved: ${msg}`, txHash });
       await loadGameState();
+      await new Promise((r) => setTimeout(r, 400));
+      await loadGameState();
+      setContractSyncTrigger((t) => t + 1);
       setTimeout(() => setSuccess(null), 8000);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to resolve shot');
