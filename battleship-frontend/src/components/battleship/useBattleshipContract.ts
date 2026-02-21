@@ -96,7 +96,7 @@ export function boardLayoutCellsFromPositions(positions: ShipPositions): { x: nu
 export type InitResultRef = React.MutableRefObject<ReturnType<typeof init> | null>;
 
 export function useBattleshipContract(initResultRef: InitResultRef) {
-  const { getContractSigner, walletType, publicKey, switchPlayer, getCurrentDevPlayer, isConnecting } = useWallet();
+  const { getContractSigner, walletType, publicKey, switchPlayer, getCurrentDevPlayer, isConnecting, connectDev, isDevModeAvailable } = useWallet();
   const userAddress = publicKey ?? '';
   const [sessionId, setSessionId] = useState(() => createRandomSessionId());
   const [gameState, setGameState] = useState<Game | null>(null);
@@ -664,6 +664,8 @@ export function useBattleshipContract(initResultRef: InitResultRef) {
     handleResolveShot,
     onPlacementComplete,
     onFire,
+    connectDev,
+    isDevModeAvailable,
     // refs for sync effect (shell)
     playerSwitchPendingRef,
   };

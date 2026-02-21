@@ -10,6 +10,11 @@ function popcount(n: number | bigint): number {
   return c;
 }
 
+function truncateAddress(addr: string): string {
+  if (!addr || addr.length <= 12) return addr;
+  return `${addr.slice(0, 5)}...${addr.slice(-5)}`;
+}
+
 interface BattlePanelProps {
   gameState: Game | null;
   isPlayer1: boolean;
@@ -51,12 +56,18 @@ export function BattlePanel({
       <div className="hud-panel-title">Battle</div>
 
       <div className="hud-panel-scores">
-        <span className={isPlayer1 ? 'active' : ''}>
-          P1: {gameState.hits_on_p1}H / {popcount(gameState.sunk_ships_on_p1)}S
-        </span>
-        <span className={isPlayer2 ? 'active' : ''}>
-          P2: {gameState.hits_on_p2}H / {popcount(gameState.sunk_ships_on_p2)}S
-        </span>
+        <div className={isPlayer1 ? 'active' : ''}>
+          <div>P1: {gameState.hits_on_p1}H / {popcount(gameState.sunk_ships_on_p1)}S</div>
+          <div className="hud-panel-address" title={gameState.player1}>
+            {truncateAddress(gameState.player1)}
+          </div>
+        </div>
+        <div className={isPlayer2 ? 'active' : ''}>
+          <div>P2: {gameState.hits_on_p2}H / {popcount(gameState.sunk_ships_on_p2)}S</div>
+          <div className="hud-panel-address" title={gameState.player2}>
+            {truncateAddress(gameState.player2)}
+          </div>
+        </div>
       </div>
 
       {statusText && (

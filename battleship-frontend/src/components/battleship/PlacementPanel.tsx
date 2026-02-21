@@ -1,5 +1,10 @@
 import type { Game } from '../../games/battleship/bindings';
 
+function truncateAddress(addr: string): string {
+  if (!addr || addr.length <= 12) return addr;
+  return `${addr.slice(0, 5)}...${addr.slice(-5)}`;
+}
+
 interface PlacementPanelProps {
   gameState: Game | null;
   isPlayer1: boolean;
@@ -33,12 +38,18 @@ export function PlacementPanel({
       <div className="hud-panel-title">Ship Placement</div>
 
       <div className="hud-panel-scores">
-        <span className={isPlayer1 ? 'active' : ''}>
-          P1: {p1Committed ? 'READY' : 'PLACING'}
-        </span>
-        <span className={isPlayer2 ? 'active' : ''}>
-          P2: {p2Committed ? 'READY' : 'PLACING'}
-        </span>
+        <div className={isPlayer1 ? 'active' : ''}>
+          <div>P1: {p1Committed ? 'READY' : 'PLACING'}</div>
+          <div className="hud-panel-address" title={gameState.player1}>
+            {truncateAddress(gameState.player1)}
+          </div>
+        </div>
+        <div className={isPlayer2 ? 'active' : ''}>
+          <div>P2: {p2Committed ? 'READY' : 'PLACING'}</div>
+          <div className="hud-panel-address" title={gameState.player2}>
+            {truncateAddress(gameState.player2)}
+          </div>
+        </div>
       </div>
 
       {haveICommittedBoard ? (

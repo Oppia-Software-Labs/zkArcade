@@ -5,7 +5,6 @@ import { useBattleshipContract } from './battleship/useBattleshipContract';
 import { PlacementPanel } from './battleship/PlacementPanel';
 import { BattlePanel } from './battleship/BattlePanel';
 import { useToast, ToastContainer } from './Toast';
-import { WalletSwitcher } from './WalletSwitcher';
 import { decodeShotBitmap } from '../games/battleship/shotUtils';
 
 export function Battleship3DWithContract() {
@@ -49,12 +48,23 @@ export function Battleship3DWithContract() {
     handleSwitchPlayer,
     onPlacementComplete,
     onFire,
+    connectDev,
+    isDevModeAvailable,
     playerSwitchPendingRef,
   } = contract;
 
   // Surface error / success as toasts
   const prevErrorRef = useRef<string | null>(null);
   const prevSuccessRef = useRef<{ message: string; txHash?: string } | null>(null);
+  const hasAutoConnectAttempted = useRef(false);
+
+  // Auto-connect dev wallet when on game page so user never sees WalletSwitcher
+  useEffect(() => {
+    if (!userAddress && !isConnecting && isDevModeAvailable() && !hasAutoConnectAttempted.current) {
+      hasAutoConnectAttempted.current = true;
+      connectDev(1).catch(() => {});
+    }
+  }, [userAddress, isConnecting, connectDev, isDevModeAvailable]);
 
   useEffect(() => {
     if (error && error !== prevErrorRef.current) {
@@ -183,12 +193,9 @@ export function Battleship3DWithContract() {
               <span>Setting up game...</span>
             </>
           ) : (
-            <>
-              <WalletSwitcher />
-              <span style={{ marginTop: '0.5rem', fontSize: '0.75rem', opacity: 0.7 }}>
-                {userAddress ? 'Starting quickstart...' : 'Connect dev wallet to continue'}
-              </span>
-            </>
+            <span style={{ fontSize: '0.75rem', opacity: 0.7 }}>
+              {userAddress ? 'Starting quickstart...' : 'Connect dev wallet to continue'}
+            </span>
           )}
         </div>
       )}
@@ -196,7 +203,7 @@ export function Battleship3DWithContract() {
       {/* HUD: top bar */}
       {(gamePhase === 'placement' || gamePhase === 'battle') && (
         <div className="game-hud-top">
-          <span className="game-hud-session">Session {sessionId}</span>
+          <span className="game-hud-session">Session ID: {sessionId}</span>
           <button
             type="button"
             onClick={handleSwitchPlayer}
