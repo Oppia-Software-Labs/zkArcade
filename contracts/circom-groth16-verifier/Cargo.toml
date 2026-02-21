@@ -1,3 +1,5 @@
+# Groth16 verifier for Circom proofs on Soroban. Output: circom_groth16_verifier.wasm
+# (Cargo converts hyphens to underscores in binary name). Build: stellar contract build --optimize
 [package]
 name = "circom-groth16-verifier"
 version = "0.1.0"

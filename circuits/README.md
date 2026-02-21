@@ -122,17 +122,16 @@ The same `public.json` ordering (four public inputs: board_commitment_hi, board_
 
 ---
 
-## Deploy order
+## Deploy order (circom → Groth16 → verifier → wasm → stellar)
 
-For on-chain verification, use this order:
+Full pipeline for on-chain verification:
 
-1. **Build circuits** → `bun run circuits:build`
+1. **Build circuits** → `bun run circuits:build` (board_commit, resolve_shot)
 2. **Run trusted setup** → `bun run circuits:setup-vkey -- --ptau <ptau>`
 3. **Export vkey** → written by setup script to `circuits/build/vkey.json`
 4. **Convert vkey** → `bun run circuits:vkey-to-soroban` → `circuits/build/vkey_soroban.json`
-5. **Deploy circom-groth16-verifier** with the converted verification key (VerificationKeyBytes).
-6. **Deploy battleship-verifier-adapter** with the verifier contract address.
-7. **Deploy battleship** with the adapter address (or, if the adapter is inlined, with the verifier address).
+5. **Build Rust verifier** → `bun run build circom-groth16-verifier` (uses `stellar contract build --optimize`; without `--optimize` the WASM is 0 bytes)
+6. **Deploy** → `bun run deploy` uses `stellar contract upload` + `stellar contract deploy` with `vkey_soroban.json`
 
 ---
 

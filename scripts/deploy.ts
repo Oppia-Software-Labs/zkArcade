@@ -3,12 +3,16 @@
 /**
  * Deploy script for Soroban contracts to testnet
  *
- * Deploys Soroban contracts to testnet
- * Returns the deployed contract IDs
+ * Pipeline: circom circuits → Groth16 setup → vkey_soroban.json
+ *   → circom-groth16-verifier (Rust) → stellar contract build --optimize
+ *   → stellar contract upload (WASM to ledger) → stellar contract deploy (instance + --vk)
+ *
+ * Battleship chain: circom-groth16-verifier → battleship-verifier-adapter → battleship
+ * Uses stellar contract upload (not deprecated install). WASM must be non-empty (build with --optimize).
  */
 
 import { $ } from "bun";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -144,16 +148,27 @@ const needsMock = standardGameContracts.some((c) => !c.isMockHub);
 const deployMockRequested = contracts.some((c) => c.isMockHub);
 const shouldEnsureMock = deployMockRequested || needsMock;
 
-// Check required WASM files exist for selected contracts (non-mock first)
-const missingWasm: string[] = [];
+// Check required WASM files exist and are non-empty (0-byte = failed build, deploy would fail with "unexpected end-of-file")
+const missingWasm = new Set<string>();
+const wasmAbs = (p: string) => (p.startsWith("/") ? p : join(process.cwd(), p));
+const checkWasm = (p: string) => {
+  const abs = wasmAbs(p);
+  if (!existsSync(abs)) missingWasm.add(abs);
+  else if (statSync(abs).size === 0) missingWasm.add(`${abs} (0 bytes - run 'bun run build' with --optimize)`);
+};
 for (const contract of contracts) {
   if (contract.isMockHub) continue;
-  if (!await Bun.file(contract.wasmPath).exists()) missingWasm.push(contract.wasmPath);
+  checkWasm(contract.wasmPath);
 }
-if (missingWasm.length > 0) {
-  console.error("❌ Error: Missing WASM build outputs:");
-  for (const p of missingWasm) console.error(`  - ${p}`);
-  console.error("\nRun 'bun run build [contract-name]' first");
+if (needsBattleshipChain) {
+  for (const name of ["circom_groth16_verifier", "battleship_verifier_adapter", "battleship"]) {
+    checkWasm(join(process.cwd(), "target", "wasm32v1-none", "release", `${name}.wasm`));
+  }
+}
+if (missingWasm.size > 0) {
+  console.error("❌ Error: Missing or invalid WASM build outputs:");
+  for (const p of [...missingWasm]) console.error(`  - ${p}`);
+  console.error("\nRun 'bun run build circom-groth16-verifier battleship-verifier-adapter battleship' first");
   process.exit(1);
 }
 
@@ -220,7 +235,7 @@ try {
 for (const identity of ['player1', 'player2']) {
   console.log(`Setting up ${identity}...`);
 
-  let keypair: Keypair;
+  let keypair: StellarKeypair;
   if (existingSecrets[identity]) {
     console.log(`✅ Using existing ${identity} from .env`);
     keypair = Keypair.fromSecret(existingSecrets[identity]!);
@@ -322,22 +337,22 @@ if (needsBattleshipChain) {
   console.log("Deploying Battleship verifier chain...\n");
 
   const groth16Wasm = wasmPath("circom_groth16_verifier");
-  const installGroth16 = await $`stellar contract install --wasm ${groth16Wasm} --source-account ${adminSecret} --network ${NETWORK}`.text();
-  const deployGroth16 = await $`stellar contract deploy --wasm-hash ${installGroth16.trim()} --source-account ${adminSecret} --network ${NETWORK} -- --vk ${vkeyArg}`.text();
+  const uploadGroth16 = await $`stellar contract upload --wasm ${groth16Wasm} --source-account ${adminSecret} --network ${NETWORK}`.text();
+  const deployGroth16 = await $`stellar contract deploy --wasm-hash ${uploadGroth16.trim()} --source-account ${adminSecret} --network ${NETWORK} -- --vk ${vkeyArg}`.text();
   const circomGroth16VerifierId = deployGroth16.trim();
   deployed["circom-groth16-verifier"] = circomGroth16VerifierId;
   console.log(`✅ circom-groth16-verifier: ${circomGroth16VerifierId}\n`);
 
   const adapterWasm = wasmPath("battleship_verifier_adapter");
-  const installAdapter = await $`stellar contract install --wasm ${adapterWasm} --source-account ${adminSecret} --network ${NETWORK}`.text();
-  const deployAdapter = await $`stellar contract deploy --wasm-hash ${installAdapter.trim()} --source-account ${adminSecret} --network ${NETWORK} -- --admin ${adminAddress} --verifier ${circomGroth16VerifierId}`.text();
+  const uploadAdapter = await $`stellar contract upload --wasm ${adapterWasm} --source-account ${adminSecret} --network ${NETWORK}`.text();
+  const deployAdapter = await $`stellar contract deploy --wasm-hash ${uploadAdapter.trim()} --source-account ${adminSecret} --network ${NETWORK} -- --admin ${adminAddress} --verifier ${circomGroth16VerifierId}`.text();
   const battleshipVerifierAdapterId = deployAdapter.trim();
   deployed["battleship-verifier-adapter"] = battleshipVerifierAdapterId;
   console.log(`✅ battleship-verifier-adapter: ${battleshipVerifierAdapterId}\n`);
 
   const battleshipWasm = wasmPath("battleship");
-  const installBattleship = await $`stellar contract install --wasm ${battleshipWasm} --source-account ${adminSecret} --network ${NETWORK}`.text();
-  const deployBattleship = await $`stellar contract deploy --wasm-hash ${installBattleship.trim()} --source-account ${adminSecret} --network ${NETWORK} -- --admin ${adminAddress} --game-hub ${mockGameHubId} --verifier ${battleshipVerifierAdapterId}`.text();
+  const uploadBattleship = await $`stellar contract upload --wasm ${battleshipWasm} --source-account ${adminSecret} --network ${NETWORK}`.text();
+  const deployBattleship = await $`stellar contract deploy --wasm-hash ${uploadBattleship.trim()} --source-account ${adminSecret} --network ${NETWORK} -- --admin ${adminAddress} --game-hub ${mockGameHubId} --verifier ${battleshipVerifierAdapterId}`.text();
   deployed["battleship"] = deployBattleship.trim();
   console.log(`✅ battleship: ${deployed["battleship"]}\n`);
 }
@@ -347,10 +362,10 @@ for (const contract of standardGameContracts) {
 
   console.log(`Deploying ${contract.packageName}...`);
   try {
-    console.log("  Installing WASM...");
-    const installResult =
-      await $`stellar contract install --wasm ${contract.wasmPath} --source-account ${adminSecret} --network ${NETWORK}`.text();
-    const wasmHash = installResult.trim();
+    console.log("  Uploading WASM...");
+    const uploadResult =
+      await $`stellar contract upload --wasm ${contract.wasmPath} --source-account ${adminSecret} --network ${NETWORK}`.text();
+    const wasmHash = uploadResult.trim();
     console.log(`  WASM hash: ${wasmHash}`);
 
     console.log("  Deploying and initializing...");

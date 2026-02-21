@@ -102,8 +102,8 @@ async function main() {
   // 1. Deploy circom-groth16-verifier with vk
   console.log("Deploying circom-groth16-verifier...");
   const groth16Wasm = wasmPath(CONTRACTS[0].wasmName);
-  const installGroth16 = await $`stellar contract install --wasm ${groth16Wasm} --source-account ${deployerSecret} --network ${NETWORK}`.text();
-  const groth16Hash = installGroth16.trim();
+  const uploadGroth16 = await $`stellar contract upload --wasm ${groth16Wasm} --source-account ${deployerSecret} --network ${NETWORK}`.text();
+  const groth16Hash = uploadGroth16.trim();
   const deployGroth16 = await $`stellar contract deploy --wasm-hash ${groth16Hash} --source-account ${deployerSecret} --network ${NETWORK} -- --vk ${vkeyArg}`.text();
   const circomGroth16VerifierId = deployGroth16.trim();
   console.log(`✅ circom-groth16-verifier: ${circomGroth16VerifierId}\n`);
@@ -111,8 +111,8 @@ async function main() {
   // 2. Deploy battleship-verifier-adapter with admin + verifier
   console.log("Deploying battleship-verifier-adapter...");
   const adapterWasm = wasmPath(CONTRACTS[1].wasmName);
-  const installAdapter = await $`stellar contract install --wasm ${adapterWasm} --source-account ${deployerSecret} --network ${NETWORK}`.text();
-  const adapterHash = installAdapter.trim();
+  const uploadAdapter = await $`stellar contract upload --wasm ${adapterWasm} --source-account ${deployerSecret} --network ${NETWORK}`.text();
+  const adapterHash = uploadAdapter.trim();
   const deployAdapter = await $`stellar contract deploy --wasm-hash ${adapterHash} --source-account ${deployerSecret} --network ${NETWORK} -- --admin ${adminAddress} --verifier ${circomGroth16VerifierId}`.text();
   const battleshipVerifierAdapterId = deployAdapter.trim();
   console.log(`✅ battleship-verifier-adapter: ${battleshipVerifierAdapterId}\n`);
@@ -120,8 +120,8 @@ async function main() {
   // 3. Deploy battleship with admin + game_hub + verifier (adapter)
   console.log("Deploying battleship...");
   const battleshipWasm = wasmPath(CONTRACTS[2].wasmName);
-  const installBattleship = await $`stellar contract install --wasm ${battleshipWasm} --source-account ${deployerSecret} --network ${NETWORK}`.text();
-  const battleshipHash = installBattleship.trim();
+  const uploadBattleship = await $`stellar contract upload --wasm ${battleshipWasm} --source-account ${deployerSecret} --network ${NETWORK}`.text();
+  const battleshipHash = uploadBattleship.trim();
   const deployBattleship = await $`stellar contract deploy --wasm-hash ${battleshipHash} --source-account ${deployerSecret} --network ${NETWORK} -- --admin ${adminAddress} --game-hub ${mockGameHubId} --verifier ${battleshipVerifierAdapterId}`.text();
   const battleshipId = deployBattleship.trim();
   console.log(`✅ battleship: ${battleshipId}\n`);
