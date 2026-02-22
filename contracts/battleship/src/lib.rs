@@ -93,6 +93,11 @@ impl BattleshipContract {
             sunk_ships_on_p1: 0,
             sunk_ships_on_p2: 0,
             winner: None,
+            last_resolved_shooter: None,
+            last_resolved_x: 0,
+            last_resolved_y: 0,
+            last_resolved_is_hit: false,
+            last_resolved_sunk_ship: 0,
         };
 
         save_game(&env, &key, &game);
@@ -179,6 +184,13 @@ impl BattleshipContract {
         } else {
             return Err(Error::NotPlayer);
         }
+
+        // Clear last resolved so only the most recent resolve is visible to shooter.
+        game.last_resolved_shooter = None;
+        game.last_resolved_x = 0;
+        game.last_resolved_y = 0;
+        game.last_resolved_is_hit = false;
+        game.last_resolved_sunk_ship = 0;
 
         game.pending_shot_shooter = Some(shooter);
         game.pending_shot_x = x;
@@ -331,11 +343,18 @@ impl BattleshipContract {
             game.phase = GamePhase::Ended;
             game.winner = Some(shooter.clone());
             game.turn = None;
-            winner = Some(shooter);
+            winner = Some(shooter.clone());
         } else {
             game.turn = Some(defender.clone());
             next_turn = Some(defender);
         }
+
+        // Expose last resolved shot so shooter can learn result from get_game().
+        game.last_resolved_shooter = Some(shooter.clone());
+        game.last_resolved_x = shot_x;
+        game.last_resolved_y = shot_y;
+        game.last_resolved_is_hit = is_hit;
+        game.last_resolved_sunk_ship = sunk_ship;
 
         game.pending_shot_shooter = None;
         save_game(&env, &key, &game);
@@ -375,6 +394,26 @@ impl BattleshipContract {
     pub fn get_game(env: Env, session_id: u32) -> Result<Game, Error> {
         let key = DataKey::Game(session_id);
         load_game(&env, &key)
+    }
+
+    /// Notify the Game Hub that the game has ended. Idempotent; safe to call when the game
+    /// is already in Ended state (e.g. if hub was not notified during resolve_shot).
+    pub fn notify_game_ended_to_hub(env: Env, session_id: u32) -> Result<(), Error> {
+        let key = DataKey::Game(session_id);
+        let game = load_game(&env, &key)?;
+        if game.phase != GamePhase::Ended {
+            return Err(Error::InvalidPhase);
+        }
+        let winner = game.winner.ok_or(Error::InvalidPhase)?;
+        let game_hub_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::GameHubAddress)
+            .expect("GameHub address not set");
+        let game_hub = GameHubClient::new(&env, &game_hub_addr);
+        let player1_won = winner == game.player1;
+        game_hub.end_game(&session_id, &player1_won);
+        Ok(())
     }
 
     pub fn get_rules(_env: Env) -> GameRules {

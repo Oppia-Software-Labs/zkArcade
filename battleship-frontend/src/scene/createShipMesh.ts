@@ -118,9 +118,10 @@ export function positionShipMesh(
   const centerRow = (minRow + maxRow) / 2;
   const centerCol = (minCol + maxCol) / 2;
 
+  // Match grid: (0,0) bottom-left, so row 0 → position 9
   mesh.position.set(
     offsetX + centerCol - CELL_OFFSET,
     GRID_Y_OFFSET,
-    offsetZ + centerRow - CELL_OFFSET
+    offsetZ + (9 - centerRow) - CELL_OFFSET
   );
 }

@@ -60,6 +60,7 @@ const Keypair = await loadKeypairFactory();
 const NETWORK = 'testnet';
 const RPC_URL = 'https://soroban-testnet.stellar.org';
 const NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015';
+// Required Game Hub for submissions: contracts must call start_game() and end_game() on this hub.
 const EXISTING_GAME_HUB_TESTNET_CONTRACT_ID = 'CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG';
 /** Deploy order: verifier stack (circom → adapter) then battleship which needs adapter + game_hub */
 const DEPLOY_ORDER = ["circom-groth16-verifier", "battleship-verifier-adapter", "battleship"];
@@ -127,13 +128,22 @@ if (selection.unknown.length > 0 || selection.ambiguous.length > 0) {
 }
 
 const contracts = selection.contracts;
+
+const BATTLESHIP_CHAIN_PACKAGES = ["battleship", "circom-groth16-verifier", "battleship-verifier-adapter"] as const;
+const needsBattleshipChain = contracts.some((c) =>
+  (BATTLESHIP_CHAIN_PACKAGES as readonly string[]).includes(c.packageName),
+);
+const standardGameContracts = contracts.filter(
+  (c) => !(BATTLESHIP_CHAIN_PACKAGES as readonly string[]).includes(c.packageName),
+);
+
 const mock = allContracts.find((c) => c.isMockHub);
-if (!mock) {
-  console.error("❌ Error: mock-game-hub contract not found in workspace members");
+if (!mock && standardGameContracts.length > 0) {
+  console.error("❌ Error: mock-game-hub contract not found in workspace members (required for standard games)");
   process.exit(1);
 }
 
-const needsMock = contracts.some((c) => !c.isMockHub);
+const needsMock = standardGameContracts.some((c) => !c.isMockHub);
 const deployMockRequested = contracts.some((c) => c.isMockHub);
 const shouldEnsureMock = deployMockRequested || needsMock;
 
@@ -249,9 +259,14 @@ const adminSecret = adminKeypair.secret();
 
 const deployed: Record<string, string> = { ...existingContractIds };
 
-// Ensure mock Game Hub exists so we can pass it into game constructors.
-let mockGameHubId = existingContractIds[mock.packageName] || "";
-if (shouldEnsureMock) {
+// Ensure mock Game Hub exists so we can pass it into game constructors (when we have mock in workspace).
+let mockGameHubId =
+  existingContractIds[mock?.packageName ?? ""] ||
+  existingDeployment?.mockGameHubId ||
+  existingDeployment?.contracts?.["mock-game-hub"] ||
+  EXISTING_GAME_HUB_TESTNET_CONTRACT_ID;
+
+if (mock && shouldEnsureMock) {
   const candidateMockIds = [
     existingContractIds[mock.packageName],
     existingDeployment?.mockGameHubId,
@@ -269,7 +284,7 @@ if (shouldEnsureMock) {
     deployed[mock.packageName] = mockGameHubId;
     console.log(`✅ Using existing ${mock.packageName} on testnet: ${mockGameHubId}\n`);
   } else {
-    if (!await Bun.file(mock.wasmPath).exists()) {
+    if (!(await Bun.file(mock.wasmPath).exists())) {
       console.error("❌ Error: Missing WASM build output for mock-game-hub:");
       console.error(`  - ${mock.wasmPath}`);
       console.error("\nRun 'bun run build mock-game-hub' first");
@@ -299,6 +314,47 @@ const orderedContracts = [...contracts]
     const ib = DEPLOY_ORDER.indexOf(b.packageName);
     return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
   });
+// Deploy Battleship verifier chain (circom-groth16-verifier → adapter → battleship) when any of them are selected.
+if (needsBattleshipChain) {
+  const vkeyPath = join(import.meta.dir, "..", "circuits", "build", "vkey_soroban.json");
+  if (!existsSync(vkeyPath)) {
+    console.error("❌ Battleship chain requires circuits verification key. Run:");
+    console.error("   bun run circuits:build");
+    console.error("   bun run circuits:setup-vkey -- --ptau <path-to.ptau>");
+    console.error("   bun run circuits:vkey-to-soroban");
+    process.exit(1);
+  }
+  const vkeyJson = await Bun.file(vkeyPath).json();
+  const vkeyArg = JSON.stringify(vkeyJson);
+
+  const wasmPath = (name: string) =>
+    join(import.meta.dir, "..", "target", "wasm32v1-none", "release", `${name}.wasm`);
+
+  console.log("Deploying Battleship verifier chain...\n");
+
+  const groth16Wasm = wasmPath("circom_groth16_verifier");
+  const installGroth16 = await $`stellar contract install --wasm ${groth16Wasm} --source-account ${adminSecret} --network ${NETWORK}`.text();
+  const deployGroth16 = await $`stellar contract deploy --wasm-hash ${installGroth16.trim()} --source-account ${adminSecret} --network ${NETWORK} -- --vk ${vkeyArg}`.text();
+  const circomGroth16VerifierId = deployGroth16.trim();
+  deployed["circom-groth16-verifier"] = circomGroth16VerifierId;
+  console.log(`✅ circom-groth16-verifier: ${circomGroth16VerifierId}\n`);
+
+  const adapterWasm = wasmPath("battleship_verifier_adapter");
+  const installAdapter = await $`stellar contract install --wasm ${adapterWasm} --source-account ${adminSecret} --network ${NETWORK}`.text();
+  const deployAdapter = await $`stellar contract deploy --wasm-hash ${installAdapter.trim()} --source-account ${adminSecret} --network ${NETWORK} -- --admin ${adminAddress} --verifier ${circomGroth16VerifierId}`.text();
+  const battleshipVerifierAdapterId = deployAdapter.trim();
+  deployed["battleship-verifier-adapter"] = battleshipVerifierAdapterId;
+  console.log(`✅ battleship-verifier-adapter: ${battleshipVerifierAdapterId}\n`);
+
+  const battleshipWasm = wasmPath("battleship");
+  const installBattleship = await $`stellar contract install --wasm ${battleshipWasm} --source-account ${adminSecret} --network ${NETWORK}`.text();
+  const deployBattleship = await $`stellar contract deploy --wasm-hash ${installBattleship.trim()} --source-account ${adminSecret} --network ${NETWORK} -- --admin ${adminAddress} --game-hub ${mockGameHubId} --verifier ${battleshipVerifierAdapterId}`.text();
+  deployed["battleship"] = deployBattleship.trim();
+  console.log(`✅ battleship: ${deployed["battleship"]}\n`);
+}
+
+for (const contract of standardGameContracts) {
+  if (contract.isMockHub) continue;
 
 for (const contract of orderedContracts) {
   console.log(`Deploying ${contract.packageName}...`);
@@ -351,7 +407,12 @@ console.log("🎉 Deployment complete!\n");
 console.log("Contract IDs:");
 const outputContracts = new Set<string>();
 for (const contract of contracts) outputContracts.add(contract.packageName);
-if (shouldEnsureMock) outputContracts.add(mock.packageName);
+if (mock && shouldEnsureMock) outputContracts.add(mock.packageName);
+if (needsBattleshipChain) {
+  outputContracts.add("circom-groth16-verifier");
+  outputContracts.add("battleship-verifier-adapter");
+  outputContracts.add("battleship");
+}
 for (const contract of allContracts) {
   if (!outputContracts.has(contract.packageName)) continue;
   const id = deployed[contract.packageName];
@@ -365,11 +426,16 @@ const deploymentContracts = allContracts.reduce<Record<string, string>>((acc, co
   acc[contract.packageName] = deployed[contract.packageName] || "";
   return acc;
 }, {});
+if (deployed["circom-groth16-verifier"]) deploymentContracts["circom-groth16-verifier"] = deployed["circom-groth16-verifier"];
+if (deployed["battleship-verifier-adapter"]) deploymentContracts["battleship-verifier-adapter"] = deployed["battleship-verifier-adapter"];
+if (deployed["battleship"]) deploymentContracts["battleship"] = deployed["battleship"];
 
 const deploymentInfo = {
   mockGameHubId,
   twentyOneId,
   numberGuessId,
+  circomGroth16VerifierId: deployed["circom-groth16-verifier"] || "",
+  battleshipVerifierAdapterId: deployed["battleship-verifier-adapter"] || "",
   contracts: deploymentContracts,
   network: NETWORK,
   rpcUrl: RPC_URL,

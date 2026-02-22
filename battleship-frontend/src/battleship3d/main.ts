@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { setupScene } from '../scene/setupScene';
-import { createGrid, setTileColor, GRID_SIZE, TILE_SIZE } from '../scene/createGrid';
+import { createGrid, setTileColor, setTilePending, GRID_SIZE, TILE_SIZE } from '../scene/createGrid';
 import {
   createShipMeshFromModel,
   positionShipMesh
@@ -11,6 +11,48 @@ import { canPlaceShip, getShipCells } from '../game/placement';
 import { placeAIShips } from '../game/aiPlacement';
 import { config } from '../config';
 import type { GridCell } from '../game/gameState';
+
+/** Circuit-compatible placement: col, row, dir (1=horizontal, 0=vertical) per ship. */
+export interface ShipPositions {
+  ship_x: number[];
+  ship_y: number[];
+  ship_dir: number[];
+}
+
+/** State passed from React for contract (two-player) mode. */
+export interface ContractModeState {
+  phase: 'placement' | 'battle';
+  isMyTurn?: boolean;
+  hasPendingShot?: boolean;
+  iAmDefender?: boolean;
+  pendingShotX?: number;
+  pendingShotY?: number;
+  /** Local optimistic pending shot the attacker just clicked (col,row). */
+  myPendingShot?: { x: number; y: number } | null;
+  /** Keys "x,y" (col,row) for cells hit on my board. */
+  resolvedHitsOnMyBoard?: Set<string> | string[];
+  /** Keys "x,y" for all cells shot at on my board (hits + misses). Used to show misses gray. */
+  resolvedShotsOnMyBoard?: Set<string> | string[];
+  /** Keys "x,y" -> { hit, sunkShip } for my shots on opponent. */
+  myShotsOnOpponent?: Record<string, { hit: boolean; sunkShip: number }>;
+}
+
+/** Callbacks for contract mode: no AI, React drives lifecycle. */
+export interface ContractModeCallbacks {
+  onPlacementComplete: (positions: ShipPositions) => void;
+  onFire: (col: number, row: number) => void;
+  onResolveRequested?: () => void;
+}
+
+export interface InitOptions {
+  contractMode?: boolean;
+  callbacks?: ContractModeCallbacks;
+}
+
+export interface InitResult {
+  dispose: () => void;
+  setContractState?: (state: ContractModeState) => void;
+}
 
 const halfGrid = (GRID_SIZE - 1) / 2;
 const playerOffsetZ = halfGrid + 0.5; // shift so back edge of row 0 aligns with vertical grid at z=0
@@ -23,6 +65,11 @@ let camera: THREE.PerspectiveCamera | null = null;
 let controls: OrbitControls | null = null;
 let raycaster: THREE.Raycaster | null = null;
 let mouse: THREE.Vector2 | null = null;
+
+let contractMode = false;
+let contractCallbacks: ContractModeCallbacks | null = null;
+let contractState: ContractModeState = { phase: 'placement' };
+let contractResolveOverlay: HTMLDivElement | null = null;
 
 function getGridCellFromScreenCoords(
   clientX: number,
@@ -86,10 +133,127 @@ async function placeShip(
   updateShipDock();
 
   if (gameState.availableShips.length === 0) {
-    placeAIShips();
-    gameState.state = 'PLAYER_TURN';
-    console.log('Battle start! Your turn.');
-    removeShipDock();
+    if (contractMode && contractCallbacks) {
+      const positions = buildShipPositionsFromShips();
+      contractCallbacks.onPlacementComplete(positions);
+      removeShipDock();
+    } else {
+      placeAIShips();
+      gameState.state = 'PLAYER_TURN';
+      console.log('Battle start! Your turn.');
+      removeShipDock();
+    }
+  }
+}
+
+/** Circuit expects ships in order: length 5, 4, 3, 3, 2. */
+const CIRCUIT_SHIP_LENGTHS = [5, 4, 3, 3, 2];
+
+function buildShipPositionsFromShips(): ShipPositions {
+  const ship_x: number[] = [];
+  const ship_y: number[] = [];
+  const ship_dir: number[] = [];
+  const byLength = [...gameState.ships].sort((a, b) => b.cells.length - a.cells.length);
+  if (byLength.length !== 5) return { ship_x, ship_y, ship_dir };
+  for (let i = 0; i < 5; i++) {
+    if (byLength[i].cells.length !== CIRCUIT_SHIP_LENGTHS[i]) return { ship_x, ship_y, ship_dir };
+    const ship = byLength[i];
+    const rows = ship.cells.map((c) => c.row);
+    const cols = ship.cells.map((c) => c.col);
+    const minRow = Math.min(...rows);
+    const minCol = Math.min(...cols);
+    const horizontal = cols.some((c, idx) => idx > 0 && c !== cols[0]);
+    ship_x.push(minCol);
+    ship_y.push(minRow);
+    ship_dir.push(horizontal ? 1 : 0);
+  }
+  return { ship_x, ship_y, ship_dir };
+}
+
+function applyContractStateToTiles(): void {
+  const resolvedHitsSet =
+    contractState.resolvedHitsOnMyBoard instanceof Set
+      ? contractState.resolvedHitsOnMyBoard
+      : new Set(contractState.resolvedHitsOnMyBoard ?? []);
+  const resolvedShotsSet =
+    contractState.resolvedShotsOnMyBoard instanceof Set
+      ? contractState.resolvedShotsOnMyBoard
+      : new Set(contractState.resolvedShotsOnMyBoard ?? []);
+
+  // Player grid (my board): hits red, misses gray, ships green, pending shot amber
+  for (let row = 0; row < GRID_SIZE; row++) {
+    for (let col = 0; col < GRID_SIZE; col++) {
+      const key = `${col},${row}`;
+      const isShotCell = resolvedShotsSet.has(key);
+      const isHit = resolvedHitsSet.has(key);
+      const hasShip = gameState.grid[row][col].hasShip;
+
+      const isIncoming =
+        contractState.iAmDefender &&
+        contractState.hasPendingShot &&
+        contractState.pendingShotX === col &&
+        contractState.pendingShotY === row;
+
+      if (isIncoming && !isShotCell) {
+        setTilePending(gameState.grid[row][col].mesh);
+      } else if (isShotCell) {
+        setTileColor(gameState.grid[row][col].mesh, true, isHit, true);
+      } else {
+        setTileColor(gameState.grid[row][col].mesh, false, hasShip, true);
+      }
+    }
+  }
+
+  // Opponent grid: my shots — hit = red, miss = gray; pending shot amber
+  const myShots = contractState.myShotsOnOpponent ?? {};
+  const pending = contractState.myPendingShot;
+  for (let row = 0; row < GRID_SIZE; row++) {
+    for (let col = 0; col < GRID_SIZE; col++) {
+      const key = `${col},${row}`;
+      const result = myShots[key];
+      const shotResolved = result !== undefined;
+      const isHit = result?.hit ?? false;
+
+      const isPending = pending && pending.x === col && pending.y === row && !shotResolved;
+
+      if (isPending) {
+        setTilePending(gameState.aiGrid[row][col].mesh);
+      } else if (shotResolved) {
+        setTileColor(gameState.aiGrid[row][col].mesh, true, isHit);
+      } else {
+        setTileColor(gameState.aiGrid[row][col].mesh, false, false);
+      }
+    }
+  }
+}
+
+function setContractStateImpl(state: ContractModeState): void {
+  contractState = state;
+  applyContractStateToTiles();
+  if (state.phase === 'battle' && state.iAmDefender && state.hasPendingShot && contractCallbacks?.onResolveRequested) {
+    showContractResolveOverlay();
+  } else {
+    removeContractResolveOverlay();
+  }
+}
+
+function showContractResolveOverlay(): void {
+  if (contractResolveOverlay || !renderer?.domElement.parentElement) return;
+  contractResolveOverlay = document.createElement('div');
+  contractResolveOverlay.style.cssText =
+    'position:absolute;top:60px;left:50%;transform:translateX(-50%);padding:10px 20px;background:rgba(234,179,8,0.95);color:#1f2937;font-weight:bold;border-radius:8px;z-index:15;pointer-events:auto;';
+  contractResolveOverlay.textContent = 'Pending shot — resolve in game controls above';
+  const parent = renderer.domElement.parentElement;
+  if (parent.style.position !== 'relative' && parent.style.position !== 'absolute') {
+    parent.style.position = 'relative';
+  }
+  parent.appendChild(contractResolveOverlay);
+}
+
+function removeContractResolveOverlay(): void {
+  if (contractResolveOverlay?.parentElement) {
+    contractResolveOverlay.parentElement.removeChild(contractResolveOverlay);
+    contractResolveOverlay = null;
   }
 }
 
@@ -378,6 +542,97 @@ function resetGame(): void {
   }
 }
 
+/**
+ * Reset the player board for contract-mode player switching.
+ * Clears all ship meshes, resets grid and AI-grid cells.
+ * @param options.showDock — if false, skip re-creating the ship dock (e.g. during battle)
+ */
+export function resetPlayerBoard(options?: { showDock?: boolean }): void {
+  if (!scene) return;
+
+  for (const ship of gameState.ships) {
+    scene.remove(ship.mesh);
+    disposeObject3D(ship.mesh);
+  }
+
+  for (const row of gameState.grid) {
+    for (const cell of row) {
+      cell.hasShip = false;
+      cell.hit = false;
+      setTileColor(cell.mesh, false, false);
+    }
+  }
+  for (const row of gameState.aiGrid) {
+    for (const cell of row) {
+      cell.hasShip = false;
+      cell.hit = false;
+      setTileColor(cell.mesh, false, false);
+    }
+  }
+
+  gameState.ships = [];
+  gameState.aiShips = [];
+  resetAvailableShips();
+  gameState.placementOrientation = 'horizontal';
+
+  removeGhostPreview();
+  removeShipDock();
+  if (contractMode && options?.showDock !== false) {
+    createShipDock();
+  }
+}
+
+/**
+ * Programmatically restore ship placements on the 3D board.
+ * Ships in circuit order: Carrier(5), Battleship(4), Cruiser(3), Submarine(3), Destroyer(2).
+ *
+ * Idempotent: clears any existing ship meshes first, so it's safe to call even when
+ * ships are already present.  After placing, removes the dock and re-applies contract
+ * state so hit/miss markers render correctly.
+ */
+export async function restoreShipPlacements(positions: ShipPositions): Promise<void> {
+  if (!scene || positions.ship_x.length !== 5) return;
+
+  // Clear existing ships to avoid duplicates
+  for (const ship of gameState.ships) {
+    scene.remove(ship.mesh);
+    disposeObject3D(ship.mesh);
+  }
+  gameState.ships = [];
+  for (const row of gameState.grid) {
+    for (const cell of row) {
+      cell.hasShip = false;
+    }
+  }
+  resetAvailableShips();
+
+  const lengths = [5, 4, 3, 3, 2];
+  for (let i = 0; i < 5; i++) {
+    const col = positions.ship_x[i];
+    const row = positions.ship_y[i];
+    const dir = positions.ship_dir[i];
+    const length = lengths[i];
+    const orientation: 'horizontal' | 'vertical' = dir === 1 ? 'horizontal' : 'vertical';
+
+    const cells = getShipCells(row, col, length, orientation);
+    const mesh = await createShipMeshFromModel(length, orientation);
+    if (!scene) return; // guard in case scene was disposed during async gap
+    positionShipMesh(mesh, cells, 0, playerOffsetZ);
+    scene.add(mesh);
+
+    for (const cell of cells) {
+      gameState.grid[cell.row][cell.col].hasShip = true;
+    }
+
+    gameState.ships.push({ cells, hits: 0, mesh });
+    const idx = gameState.availableShips.indexOf(length);
+    if (idx !== -1) gameState.availableShips.splice(idx, 1);
+  }
+
+  removeShipDock();
+  applyContractStateToTiles();
+}
+
 function showGameOverOverlay(winner: 'player' | 'ai'): void {
   if (!renderer?.domElement.parentElement) return;
 
@@ -439,10 +694,18 @@ function showGameOverOverlay(winner: 'player' | 'ai'): void {
 
 /**
  * Initialize the 3D scene, append renderer to DOM, and start animation loop.
- * @returns dispose function for cleanup
+ * @param container - DOM element to mount the canvas
+ * @param options - optional contract mode (no AI) with callbacks and state setter
+ * @returns dispose function and optionally setContractState for contract mode
  */
-export function init(container: HTMLElement): () => void {
-  if (!container) return () => {};
+export function init(container: HTMLElement, options?: InitOptions): InitResult {
+  const noopDispose = () => {};
+  if (!container) return { dispose: noopDispose };
+
+  contractMode = options?.contractMode ?? false;
+  contractCallbacks = options?.callbacks ?? null;
+  contractState = { phase: 'placement' };
+  removeContractResolveOverlay();
 
   const setup = setupScene(container);
   scene = setup.scene;
@@ -450,8 +713,8 @@ export function init(container: HTMLElement): () => void {
   renderer = setup.renderer;
   controls = setup.controls;
 
-  gameState.grid = createGrid(scene, 0, playerOffsetZ);
-  gameState.aiGrid = createGrid(scene, 0, 0, 'vertical');
+  gameState.grid = createGrid(scene, 0, playerOffsetZ); // (0,0) top-left, (9,9) bottom-right
+  gameState.aiGrid = createGrid(scene, 0, 0, 'vertical'); // same orientation
   gameState.state = 'PLACEMENT';
   gameState.ships = [];
   gameState.aiShips = [];
@@ -466,6 +729,20 @@ export function init(container: HTMLElement): () => void {
   createShipDock();
 
   const handleClick = (event: MouseEvent): void => {
+    if (contractMode && contractCallbacks && contractState.phase === 'battle') {
+      const tile = getClickedTile(event);
+      if (!tile) return;
+      if (
+        tile.grid === 'ai' &&
+        contractState.isMyTurn &&
+        !contractState.hasPendingShot &&
+        !(contractState.myShotsOnOpponent && contractState.myShotsOnOpponent[`${tile.col},${tile.row}`])
+      ) {
+        setTilePending(gameState.aiGrid[tile.row][tile.col].mesh);
+        contractCallbacks.onFire(tile.col, tile.row);
+      }
+      return;
+    }
     if (gameState.state !== 'PLAYER_TURN') return;
     const tile = getClickedTile(event);
     if (!tile) return;
@@ -526,7 +803,7 @@ export function init(container: HTMLElement): () => void {
   }
   animate();
 
-  return () => {
+  const cleanup = () => {
     if (renderer) {
       renderer.domElement.removeEventListener('click', handleClick);
       renderer.domElement.removeEventListener('dragover', handleDragOver);
@@ -534,8 +811,17 @@ export function init(container: HTMLElement): () => void {
       renderer.domElement.removeEventListener('dragleave', handleDragLeave);
     }
     removeShipDock();
+    removeContractResolveOverlay();
+    contractMode = false;
+    contractCallbacks = null;
+    contractState = { phase: 'placement' };
     dispose();
     window.removeEventListener('resize', handleResize);
+  };
+
+  return {
+    dispose: cleanup,
+    setContractState: contractMode ? setContractStateImpl : undefined
   };
 }
 
@@ -545,6 +831,10 @@ export function init(container: HTMLElement): () => void {
 export function dispose(): void {
   removeShipDock();
   removeGhostPreview();
+  removeContractResolveOverlay();
+  contractMode = false;
+  contractCallbacks = null;
+  contractState = { phase: 'placement' };
   if (gameOverOverlay?.parentElement) {
     gameOverOverlay.parentElement.removeChild(gameOverOverlay);
     gameOverOverlay = null;

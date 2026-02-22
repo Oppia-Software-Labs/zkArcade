@@ -53,9 +53,10 @@ function g1Bytes(pt: [string, string]): string {
 }
 
 function g2Bytes(pt: [[string, string], [string, string]]): string {
-  const [x_im, x_re] = pt[0];
-  const [y_im, y_re] = pt[1];
-  return toHex32(x_im) + toHex32(x_re) + toHex32(y_im) + toHex32(y_re);
+  // snarkjs G2 points are [c0, c1] per coordinate; Soroban expects be_bytes(c1)||be_bytes(c0).
+  const [x_c0, x_c1] = pt[0];
+  const [y_c0, y_c1] = pt[1];
+  return toHex32(x_c1) + toHex32(x_c0) + toHex32(y_c1) + toHex32(y_c0);
 }
 
 function convert(data: SnarkjsVkey): VerificationKeyBytes {

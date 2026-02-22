@@ -24,7 +24,7 @@
  */
 
 import { $ } from "bun";
-import { existsSync, statSync } from "fs";
+import { existsSync } from "fs";
 import { join } from "path";
 
 const ROOT = import.meta.dir + "/..";
@@ -79,23 +79,19 @@ async function main() {
     process.exit(1);
   }
 
-  console.log("Groth16 setup for resolve_shot...\n");
-
-  // 0) Prepare phase 2 (g16s requires a phase2-prepared ptau; ptn/raw ptaus are phase1 only)
-  console.log("Preparing powers of tau for phase 2...");
-  await $`npx snarkjs pt2 ${ptau} ${PTAU_PHASE2}`.quiet();
-  console.log("Wrote", PTAU_PHASE2);
-
-  // 1) groth16 setup: circuit.r1cs + phase2 ptau -> circuit_0000.zkey (run from BUILD_DIR so zkey is written correctly)
-  console.log("\nRunning snarkjs groth16 setup...");
-  const r1csRel = "resolve_shot.r1cs";
-  const ptau2Rel = "ptau_phase2.ptau";
-  const zkeyRel = "resolve_shot_0000.zkey";
-  await $`npx snarkjs g16s ${r1csRel} ${ptau2Rel} ${zkeyRel}`.cwd(BUILD_DIR).quiet();
-  if (!existsSync(ZKEY_INITIAL) || statSync(ZKEY_INITIAL).size === 0) {
-    console.error("Error: groth16 setup did not produce a valid zkey file. Run without .quiet() to see snarkjs output.");
+  const ptauPath = resolve(ptau);
+  const ptauStat = statSync(ptauPath);
+  if (ptauStat.size === 0) {
+    console.error(`Error: ptau file is empty: ${ptauPath}`);
+    console.error("Download a valid ptau (e.g. from Hermez Phase 1) or generate with: npx snarkjs ptn bn128 <power> ptau.ptau");
     process.exit(1);
   }
+
+  console.log("Groth16 setup for resolve_shot...\n");
+
+  // 1) groth16 setup: circuit.r1cs + ptau -> circuit_0000.zkey
+  console.log("Running snarkjs groth16 setup...");
+  await $`npx snarkjs g16s ${R1CS} ${ptau} ${ZKEY_INITIAL}`.quiet();
   console.log("Wrote", ZKEY_INITIAL);
 
   let zkeyForVkey = ZKEY_INITIAL;

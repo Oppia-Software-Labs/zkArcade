@@ -21,6 +21,11 @@ export const config = {
   zkVerifierUrl:
     import.meta.env.VITE_ZK_VERIFIER_URL ||
     (typeof window !== 'undefined' ? `${window.location.origin}/verifier` : '/verifier'),
+
+  /** Public app domain for share links. Fallback: current origin. */
+  appDomain:
+    import.meta.env.VITE_APP_DOMAIN ||
+    (typeof window !== 'undefined' ? window.location.origin : ''),
 };
 
 if (Object.keys(config.contractIds).length === 0) {
