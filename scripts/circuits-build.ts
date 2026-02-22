@@ -73,9 +73,6 @@ async function main() {
 
   console.log("✅ All circuits built in circuits/build");
 
-  // Copy to battleship-frontend public so production build and dev (fallback) can serve WASM
-  const publicCircuits = join(ROOT, "battleship-frontend", "public", "circuits", "build");
-  await mkdir(publicCircuits, { recursive: true });
   async function copyDir(src: string, dest: string) {
     await mkdir(dest, { recursive: true });
     for (const e of await readdir(src, { withFileTypes: true })) {
@@ -85,8 +82,14 @@ async function main() {
       else await copyFile(s, d);
     }
   }
-  await copyDir(BUILD_DIR, publicCircuits);
+  const publicCircuitsBattleship = join(ROOT, "battleship-frontend", "public", "circuits", "build");
+  await mkdir(publicCircuitsBattleship, { recursive: true });
+  await copyDir(BUILD_DIR, publicCircuitsBattleship);
   console.log("✅ Copied circuits/build to battleship-frontend/public/circuits/build");
+  const publicCircuitsWordle = join(ROOT, "wordle-frontend", "public", "circuits", "build");
+  await mkdir(publicCircuitsWordle, { recursive: true });
+  await copyDir(BUILD_DIR, publicCircuitsWordle);
+  console.log("✅ Copied circuits/build to wordle-frontend/public/circuits/build");
 }
 
 main();

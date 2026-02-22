@@ -1,7 +1,7 @@
 pragma circom 2.1.9;
 
 include "circomlib/circuits/poseidon.circom";
-include "circomlib/circuits/comparators.circom";
+// IsZero/IsEqual defined below; do not include circomlib comparators (duplicate symbol)
 
 /// Asserts that input is 0 or 1
 template AssertBoolean() {

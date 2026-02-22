@@ -112,80 +112,76 @@ template ResolveGuess() {
     }
 
     // For each guess letter, count how many times it appears in the word
-    // at positions that are NOT exact matches
+    // at positions that are NOT exact matches (all declarations at top for Circom 2.x)
     component letterInWord[5][5];
     signal letterMatch[5][5];
     signal availableCount[5];
+    signal partialAvailable[5][6];
 
     for (var i = 0; i < 5; i++) {
-        signal partialAvailable[6];
-        partialAvailable[0] <== 0;
+        partialAvailable[i][0] <== 0;
 
         for (var j = 0; j < 5; j++) {
             letterInWord[i][j] = IsEqual();
             letterInWord[i][j].a <== guess[i];
             letterInWord[i][j].b <== word[j];
 
-            // Only count if this position in word is NOT a green match
-            // (word[j] != guess[j])
             letterMatch[i][j] <== letterInWord[i][j].out * (1 - exactMatch[j].out);
-            partialAvailable[j + 1] <== partialAvailable[j] + letterMatch[i][j];
+            partialAvailable[i][j + 1] <== partialAvailable[i][j] + letterMatch[i][j];
         }
 
-        availableCount[i] <== partialAvailable[5];
+        availableCount[i] <== partialAvailable[i][5];
     }
 
     // Count how many times each letter has been "used" by earlier positions
-    // (either as GREEN or YELLOW)
     component sameLetterBefore[5][5];
     signal usedBefore[5];
+    signal partialUsed[5][6];
+    signal isEarlier[5][5];
+    component feedbackGE1[5][5];
+    signal hasColoredFeedback[5][5];
+    signal usedAtJ[5][5];
+    signal sameAndEarlier[5][5];  // sameLetterBefore * isEarlier (quadratic)
 
     for (var i = 0; i < 5; i++) {
-        signal partialUsed[6];
-        partialUsed[0] <== 0;
+        partialUsed[i][0] <== 0;
 
         for (var j = 0; j < 5; j++) {
             sameLetterBefore[i][j] = IsEqual();
             sameLetterBefore[i][j].a <== guess[i];
             sameLetterBefore[i][j].b <== guess[j];
 
-            // Count as used if:
-            // - Same letter at earlier position (j < i)
-            // - That position has GREEN or YELLOW feedback (feedback[j] >= 1)
-            signal isEarlier;
-            isEarlier <== (j < i) ? 1 : 0;
+            isEarlier[i][j] <== (j < i) ? 1 : 0;
 
-            component feedbackGE1 = IsZero();
-            feedbackGE1.in <== feedback[j];
-            signal hasColoredFeedback;
-            hasColoredFeedback <== 1 - feedbackGE1.out;
+            feedbackGE1[i][j] = IsZero();
+            feedbackGE1[i][j].in <== feedback[j];
+            hasColoredFeedback[i][j] <== 1 - feedbackGE1[i][j].out;
 
-            signal usedAtJ;
-            usedAtJ <== sameLetterBefore[i][j].out * isEarlier * hasColoredFeedback;
-            partialUsed[j + 1] <== partialUsed[j] + usedAtJ;
+            sameAndEarlier[i][j] <== sameLetterBefore[i][j].out * isEarlier[i][j];
+            usedAtJ[i][j] <== sameAndEarlier[i][j] * hasColoredFeedback[i][j];
+            partialUsed[i][j + 1] <== partialUsed[i][j] + usedAtJ[i][j];
         }
 
-        usedBefore[i] <== partialUsed[5];
+        usedBefore[i] <== partialUsed[i][5];
     }
 
-    // Verify YELLOW and GRAY constraints
-    component availableGtUsed[5];
+    // Verify YELLOW and GRAY constraints.
+    // In the field, (availableCount - usedBefore) wraps when negative, so IsZero gives wrong result.
+    // YELLOW => availableCount > usedBefore  => (availableCount - usedBefore - 1) in [0, 4]
+    // GRAY   => availableCount <= usedBefore => (usedBefore - availableCount) in [0, 5]
+    signal inYellow[5];
+    signal inGray[5];
+    component yellowRange[5];
+    component grayRange[5];
 
     for (var i = 0; i < 5; i++) {
-        // Check if there are more available occurrences than already used
-        availableGtUsed[i] = IsZero();
-        availableGtUsed[i].in <== availableCount[i] - usedBefore[i];
-        signal hasAvailable;
-        hasAvailable <== 1 - availableGtUsed[i].out;
+        inYellow[i] <== isYellow[i].out * (availableCount[i] - usedBefore[i] - 1);
+        yellowRange[i] = AssertInRange(5);
+        yellowRange[i].in <== inYellow[i];
 
-        // If YELLOW: must have available letters AND not exact match
-        // (not exact match already enforced by GREEN constraint above)
-        isYellow[i].out * (1 - hasAvailable) === 0;
-
-        // If GRAY: must NOT have available letters (after accounting for used)
-        // OR the position itself has an exact match (which would be GREEN, not GRAY)
-        // Since we already enforce exact match => GREEN, we just check no available
-        isGray[i].out * hasAvailable === 0;
+        inGray[i] <== isGray[i].out * (usedBefore[i] - availableCount[i]);
+        grayRange[i] = AssertInRange(6);
+        grayRange[i].in <== inGray[i];
     }
 
     // 6. Binding witness for public inputs hash

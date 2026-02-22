@@ -24,8 +24,8 @@
  */
 
 import { $ } from "bun";
-import { existsSync } from "fs";
-import { join } from "path";
+import { existsSync, statSync } from "fs";
+import { join, resolve } from "path";
 
 const ROOT = import.meta.dir + "/..";
 const BUILD_DIR = join(ROOT, "circuits", "build");
