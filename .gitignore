@@ -2,15 +2,9 @@ test_snapshots/
 
 # Build artifacts
 target/
-*.wasm
 
-# Circuit build (r1cs, sym, wasm, js from circom)
-circuits/build/
 # Frontend copy of circuit artifacts (copied by circuits-build for serving WASM/zkey)
 battleship-frontend/public/circuits/build/
-
-# Powers-of-tau (large; generate or download locally)
-*.ptau
 
 # Deployment info
 deployment.json
