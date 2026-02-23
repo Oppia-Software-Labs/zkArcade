@@ -43,9 +43,12 @@ export async function injectSignedAuthEntry(
 
   for (let i = 0; i < authEntries.length; i++) {
     const entry = authEntries[i];
+    if (!entry) continue;
     try {
       if (entry.credentials().switch().name === 'sorobanCredentialsAddress') {
-        const entryAddress = Address.fromScAddress(entry.credentials().address().address()).toString();
+        const entryAddress = Address.fromScAddress(
+          entry.credentials().address().address()
+        ).toString();
         if (entryAddress === player1Address) player1StubIndex = i;
         else if (entryAddress === player2Address) {
           player2AuthEntry = entry;
@@ -64,6 +67,7 @@ export async function injectSignedAuthEntry(
   authEntries[player1StubIndex] = player1SignedAuthEntry;
 
   if (player2AuthEntry && player2Index !== -1 && player2Signer.signAuthEntry) {
+    const signAuthEntry = player2Signer.signAuthEntry;
     const authValidUntilLedgerSeq =
       validUntilLedgerSeq ??
       (await calculateValidUntilLedger(
@@ -74,7 +78,7 @@ export async function injectSignedAuthEntry(
     const player2SignedAuthEntry = await authorizeEntry(
       player2AuthEntry,
       async (preimage) => {
-        const signResult = await player2Signer.signAuthEntry(preimage.toXDR('base64'), {
+        const signResult = await signAuthEntry(preimage.toXDR('base64'), {
           networkPassphrase: tx.options?.networkPassphrase,
           address: player2Address,
         });

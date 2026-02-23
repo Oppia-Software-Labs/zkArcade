@@ -20,15 +20,24 @@ export async function signAndSendViaLaunchtube(
         try {
           return await simulated.signAndSend({ force: true });
         } catch (forceErr: unknown) {
-          const forceMessage = forceErr instanceof Error ? forceErr.message : String(forceErr);
+          const forceMessage =
+            forceErr instanceof Error ? forceErr.message : String(forceErr);
           if (
             forceMessage.includes('NoSignatureNeededError') ||
             forceMessage.includes('This is a read call') ||
             forceMessage.includes('requires no signature')
           ) {
-            const sim = simulated as { result?: unknown; simulationResult?: { result?: unknown }; returnValue?: unknown };
-            const result = sim.result ?? sim.simulationResult?.result ?? sim.returnValue ?? (tx as { result?: unknown }).result;
-            return { result, getTransactionResponse: undefined } as unknown as contract.SentTransaction<any>;
+            const sim = simulated as unknown as {
+              result?: unknown;
+              simulationResult?: { result?: unknown };
+              returnValue?: unknown;
+            };
+            const result =
+              sim.result ?? sim.simulationResult?.result ?? sim.returnValue;
+            return {
+              result,
+              getTransactionResponse: undefined,
+            } as unknown as contract.SentTransaction<any>;
           }
           throw forceErr;
         }

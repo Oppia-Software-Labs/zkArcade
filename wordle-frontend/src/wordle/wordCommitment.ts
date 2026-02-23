@@ -12,13 +12,14 @@ function bigIntToBytes32(n: bigint): Uint8Array {
   return out;
 }
 
-let poseidonInstance: ((inputs: bigint[]) => bigint) | null = null;
+let poseidonInstance: ((inputs: bigint[]) => bigint) | undefined;
 
 async function getPoseidon(): Promise<(inputs: bigint[]) => bigint> {
   if (poseidonInstance) return poseidonInstance;
   const { buildPoseidon } = await import('circomlibjs');
-  poseidonInstance = await buildPoseidon();
-  return poseidonInstance;
+  const instance = await buildPoseidon();
+  poseidonInstance = instance;
+  return instance;
 }
 
 /**
