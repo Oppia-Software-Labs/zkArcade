@@ -474,25 +474,7 @@ export function WordleGame({ userAddress, player1Address, player2Address }: Word
   }
 
   if (!wordleService.isConfigured()) {
-    return (
-      <div className="rounded-2xl bg-white/10 p-8 shadow-lg text-gray-300">
-        <h2 className="mb-4 text-xl font-semibold text-white">Wordle contract not configured</h2>
-        <p className="mb-2">From the repo root:</p>
-        <ol className="list-inside list-decimal space-y-1 text-left">
-          <li>
-            <code className="rounded bg-white/10 px-1">bun run build wordle</code> — build the contract
-          </li>
-          <li>
-            <code className="rounded bg-white/10 px-1">bun run deploy</code> — deploy (includes wordle); or set{' '}
-            <code className="rounded bg-white/10 px-1">VITE_WORDLE_CONTRACT_ID</code> in <code className="rounded bg-white/10 px-1">.env</code>
-          </li>
-          <li>
-            <code className="rounded bg-white/10 px-1">bun run bindings wordle</code> — generate client in <code className="rounded bg-white/10 px-1">bindings/wordle/</code>
-          </li>
-        </ol>
-        <p className="mt-4 text-sm">The frontend loads the client from <code className="rounded bg-white/10 px-1">bindings/wordle</code> when present.</p>
-      </div>
-    );
+    return null;
   }
 
   const roleLabel = isWordSetter ? 'Word setter' : isGuesser ? 'Guesser' : 'Spectator';
