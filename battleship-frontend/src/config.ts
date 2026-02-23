@@ -12,12 +12,20 @@ export const config = {
 
   // Backwards-compatible aliases for built-in games
   mockGameHubId: getContractId('mock-game-hub'),
-  twentyOneId: getContractId('twenty-one'),
   battleshipId: getContractId('battleship'),
-  diceDuelId: getContractId('dice-duel'),
 
   devPlayer1Address: import.meta.env.VITE_DEV_PLAYER1_ADDRESS || '',
   devPlayer2Address: import.meta.env.VITE_DEV_PLAYER2_ADDRESS || '',
+
+  /** URL for zk verifier (used in "Share on X" when player wins 3D Battleship) */
+  zkVerifierUrl:
+    import.meta.env.VITE_ZK_VERIFIER_URL ||
+    (typeof window !== 'undefined' ? `${window.location.origin}/verifier` : '/verifier'),
+
+  /** Public app domain for share links. Fallback: current origin. */
+  appDomain:
+    import.meta.env.VITE_APP_DOMAIN ||
+    (typeof window !== 'undefined' ? window.location.origin : ''),
 };
 
 if (Object.keys(config.contractIds).length === 0) {

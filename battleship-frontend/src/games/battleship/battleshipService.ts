@@ -67,6 +67,32 @@ export class BattleshipService {
   }
 
   /**
+   * Notify the Game Hub that the game has ended. Idempotent; safe to call when the game
+   * is already in Ended state. Ensures end_game is called on the hub (e.g. if it wasn't during resolve_shot).
+   */
+  async notifyGameEndedToHub(
+    sessionId: number,
+    callerAddress: string,
+    signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>
+  ): Promise<{ txHash?: string }> {
+    const client = this.createSigningClient(callerAddress, signer);
+    const tx = await client.notify_game_ended_to_hub(
+      { session_id: sessionId },
+      DEFAULT_METHOD_OPTIONS
+    );
+    const validUntilLedgerSeq = await calculateValidUntilLedger(RPC_URL, DEFAULT_AUTH_TTL_MINUTES);
+    const sentTx = await signAndSendViaLaunchtube(tx, DEFAULT_METHOD_OPTIONS.timeoutInSeconds, validUntilLedgerSeq);
+    if (sentTx.getTransactionResponse?.status === 'FAILED') {
+      const errorMessage = this.extractErrorFromDiagnostics(sentTx.getTransactionResponse);
+      throw new Error(`Transaction failed: ${errorMessage}`);
+    }
+    const txHash =
+      (sentTx as { sendTransactionResponse?: { hash?: string } }).sendTransactionResponse?.hash ??
+      (sentTx.getTransactionResponse as { txHash?: string } | undefined)?.txHash;
+    return { txHash };
+  }
+
+  /**
    * Start a new game (requires multi-sig authorization)
    * Note: This requires both players to sign the transaction
    */
@@ -576,90 +602,157 @@ export class BattleshipService {
   }
 
   /**
-   * Make a guess (1-10)
+   * Commit board commitment (32 bytes) for the current player. Call after placing ships.
+   * Returns result and transaction hash for Explorer link.
    */
-  async makeGuess(
+  async commitBoard(
     sessionId: number,
     playerAddress: string,
-    guess: number,
+    boardCommitment: Buffer,
     signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>,
     authTtlMinutes?: number
-  ) {
-    if (guess < 1 || guess > 10) {
-      throw new Error('Guess must be between 1 and 10');
+  ): Promise<{ result: void; txHash: string | undefined }> {
+    if (boardCommitment.length !== 32) {
+      throw new Error('board_commitment must be 32 bytes');
     }
 
     const client = this.createSigningClient(playerAddress, signer);
-    const tx = await client.make_guess({
+    const tx = await client.commit_board({
       session_id: sessionId,
       player: playerAddress,
-      guess,
+      board_commitment: boardCommitment,
     }, DEFAULT_METHOD_OPTIONS);
-    // NOTE: Contract methods automatically simulate - footprint is already prepared
 
     const validUntilLedgerSeq = authTtlMinutes
       ? await calculateValidUntilLedger(RPC_URL, authTtlMinutes)
       : await calculateValidUntilLedger(RPC_URL, DEFAULT_AUTH_TTL_MINUTES);
 
-    try {
-      const sentTx = await signAndSendViaLaunchtube(tx, DEFAULT_METHOD_OPTIONS.timeoutInSeconds, validUntilLedgerSeq);
-
-      if (sentTx.getTransactionResponse?.status === 'FAILED') {
-        const errorMessage = this.extractErrorFromDiagnostics(sentTx.getTransactionResponse);
-        throw new Error(`Transaction failed: ${errorMessage}`);
-      }
-
-      return sentTx.result;
-    } catch (err) {
-      if (err instanceof Error && err.message.includes('Transaction failed!')) {
-        throw new Error('Transaction failed - check if the game is still active and you haven\'t already guessed');
-      }
-      throw err;
+    const sentTx = await signAndSendViaLaunchtube(tx, DEFAULT_METHOD_OPTIONS.timeoutInSeconds, validUntilLedgerSeq);
+    if (sentTx.getTransactionResponse?.status === 'FAILED') {
+      const errorMessage = this.extractErrorFromDiagnostics(sentTx.getTransactionResponse);
+      throw new Error(`Transaction failed: ${errorMessage}`);
     }
+    const txHash =
+      (sentTx as { sendTransactionResponse?: { hash?: string } }).sendTransactionResponse?.hash ??
+      (sentTx.getTransactionResponse as { txHash?: string } | undefined)?.txHash;
+    return { result: sentTx.result, txHash };
   }
 
   /**
-   * Reveal the winner after both players have guessed
+   * Fire at (x, y) on the opponent's board. Caller is the shooter.
+   * Returns result and transaction hash for Explorer link.
    */
-  async revealWinner(
+  async fire(
     sessionId: number,
-    callerAddress: string,
+    shooterAddress: string,
+    x: number,
+    y: number,
     signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>,
     authTtlMinutes?: number
-  ) {
-    const client = this.createSigningClient(callerAddress, signer);
-    const tx = await client.reveal_winner({ session_id: sessionId }, DEFAULT_METHOD_OPTIONS);
-    // NOTE: Contract methods automatically simulate - footprint already includes all required storage keys
-    // (reveal_winner calls the Game Hub end_game() hook)
+  ): Promise<{ result: any; txHash: string | undefined }> {
+    const client = this.createSigningClient(shooterAddress, signer);
+    const tx = await client.fire({
+      session_id: sessionId,
+      shooter: shooterAddress,
+      x,
+      y,
+    }, DEFAULT_METHOD_OPTIONS);
 
     const validUntilLedgerSeq = authTtlMinutes
       ? await calculateValidUntilLedger(RPC_URL, authTtlMinutes)
       : await calculateValidUntilLedger(RPC_URL, DEFAULT_AUTH_TTL_MINUTES);
 
-    try {
-      const sentTx = await signAndSendViaLaunchtube(tx, DEFAULT_METHOD_OPTIONS.timeoutInSeconds, validUntilLedgerSeq);
-
-      // Check transaction status before accessing result
-      if (sentTx.getTransactionResponse?.status === 'FAILED') {
-        // Extract error from diagnostic events instead of return_value
-        const errorMessage = this.extractErrorFromDiagnostics(sentTx.getTransactionResponse);
-        throw new Error(`Transaction failed: ${errorMessage}`);
-      }
-
-      return sentTx.result;
-    } catch (err) {
-      // If we get here, either:
-      // 1. The transaction failed and we couldn't parse the result (return_value is null)
-      // 2. The transaction submission failed
-      // 3. The transaction is still pending after timeout
-
-      if (err instanceof Error && err.message.includes('Transaction failed!')) {
-        // This is the SDK error when trying to access .result on a failed transaction
-        throw new Error('Transaction failed - check if both players have guessed and the game is still active');
-      }
-
-      throw err;
+    const sentTx = await signAndSendViaLaunchtube(tx, DEFAULT_METHOD_OPTIONS.timeoutInSeconds, validUntilLedgerSeq);
+    if (sentTx.getTransactionResponse?.status === 'FAILED') {
+      const errorMessage = this.extractErrorFromDiagnostics(sentTx.getTransactionResponse);
+      throw new Error(`Transaction failed: ${errorMessage}`);
     }
+    const txHash =
+      (sentTx as { sendTransactionResponse?: { hash?: string } }).sendTransactionResponse?.hash ??
+      (sentTx.getTransactionResponse as { txHash?: string } | undefined)?.txHash;
+    return { result: sentTx.result, txHash };
+  }
+
+  /**
+   * Resolve the pending shot with a ZK proof. Caller is the defender (owner of the board that was shot).
+   * sunk_ship: 0 = none, 1 = Carrier, 2 = Battleship, 3 = Cruiser, 4 = Submarine, 5 = Destroyer.
+   * Returns result and transaction hash for Explorer link.
+   */
+  async resolveShot(
+    sessionId: number,
+    defenderAddress: string,
+    isHit: boolean,
+    sunkShip: number,
+    proofPayload: Buffer,
+    publicInputsHash: Buffer,
+    signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>,
+    authTtlMinutes?: number
+  ): Promise<{ result: any; txHash: string | undefined }> {
+    const client = this.createSigningClient(defenderAddress, signer);
+    const tx = await client.resolve_shot({
+      session_id: sessionId,
+      defender: defenderAddress,
+      is_hit: isHit,
+      sunk_ship: sunkShip,
+      proof_payload: proofPayload,
+      public_inputs_hash: publicInputsHash,
+    }, DEFAULT_METHOD_OPTIONS);
+
+    const validUntilLedgerSeq = authTtlMinutes
+      ? await calculateValidUntilLedger(RPC_URL, authTtlMinutes)
+      : await calculateValidUntilLedger(RPC_URL, DEFAULT_AUTH_TTL_MINUTES);
+
+    const sentTx = await signAndSendViaLaunchtube(tx, DEFAULT_METHOD_OPTIONS.timeoutInSeconds, validUntilLedgerSeq);
+    if (sentTx.getTransactionResponse?.status === 'FAILED') {
+      const errorMessage = this.extractErrorFromDiagnostics(sentTx.getTransactionResponse);
+      throw new Error(`Transaction failed: ${errorMessage}`);
+    }
+    const result = sentTx.result;
+    if (!result || !result.isOk()) {
+      throw new Error('resolve_shot returned an error');
+    }
+    const txHash =
+      (sentTx as { sendTransactionResponse?: { hash?: string } }).sendTransactionResponse?.hash ??
+      (sentTx.getTransactionResponse as { txHash?: string } | undefined)?.txHash;
+    return { result: result.unwrap(), txHash };
+  }
+
+  /**
+   * Build the public inputs hash for resolve_shot (session_id, x, y, is_hit, sunk_ship, board_commitment, defender, shooter).
+   * Defender can call this (or replicate Keccak in JS) to get the hash to pass to resolve_shot and to the circuit.
+   */
+  async buildPublicInputsHash(
+    sessionId: number,
+    defender: string,
+    shooter: string,
+    x: number,
+    y: number,
+    isHit: boolean,
+    sunkShip: number,
+    boardCommitment: Buffer
+  ): Promise<Buffer> {
+    const tx = await this.baseClient.build_public_inputs_hash({
+      session_id: sessionId,
+      defender,
+      shooter,
+      x,
+      y,
+      is_hit: isHit,
+      sunk_ship: sunkShip,
+      board_commitment: boardCommitment,
+    }, DEFAULT_METHOD_OPTIONS);
+    const result = await tx.simulate();
+    const raw: unknown = result.result;
+    if (raw == null) {
+      throw new Error('build_public_inputs_hash simulation returned no result');
+    }
+    if (Buffer.isBuffer(raw)) {
+      return raw;
+    }
+    if (raw instanceof Uint8Array) {
+      return Buffer.from(raw);
+    }
+    throw new Error(`build_public_inputs_hash returned unexpected type: ${typeof raw}`);
   }
 
   /**

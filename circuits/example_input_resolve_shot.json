@@ -1,0 +1,15 @@
+{
+  "ship_x": [0, 2, 5, 7, 0],
+  "ship_y": [0, 0, 0, 0, 5],
+  "ship_dir": [1, 1, 1, 1, 0],
+  "salt": "12345678901234567890123456789012",
+  "prior_hits": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  "shot_x": 3,
+  "shot_y": 0,
+  "is_hit": 1,
+  "sunk_ship": 0,
+  "board_commitment_hi": "0",
+  "board_commitment_lo": "0",
+  "public_inputs_hash_hi": "0",
+  "public_inputs_hash_lo": "0"
+}

@@ -10,10 +10,19 @@
     "create": "bun run scripts/create.ts",
     "publish": "bun run scripts/publish.ts",
     "dev": "bun --cwd=sgs_frontend run dev",
-    "dev:game": "bun run scripts/dev-game.ts"
+    "dev:game": "bun run scripts/dev-game.ts",
+    "circuits:build": "bun run scripts/circuits-build.ts",
+    "circuits:ptau": "bun run scripts/circuits-ptau.ts",
+    "circuits:setup-vkey": "bun run scripts/circuits-setup-vkey.ts",
+    "circuits:setup-vkey-wordle": "bun run scripts/circuits-setup-vkey-wordle.ts",
+    "circuits:vkey-to-soroban": "bun run scripts/circuits-vkey-to-soroban.ts",
+    "circuits:prove-resolve-guess": "bun run scripts/circuits-prove-resolve-guess.ts",
+    "deploy:battleship-chain": "bun run scripts/deploy-battleship-chain.ts"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "circomlib": "^2.0.5",
+    "snarkjs": "^0.7.6"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^14.5.0"
