@@ -57,6 +57,9 @@ pub struct Game {
     // Bitmaps over 100 cells. Index = y * 10 + x.
     pub shots_p1_to_p2: u128,
     pub shots_p2_to_p1: u128,
+    // Per-cell hit bitmaps so any client can reconstruct hit/miss for every shot.
+    pub hits_p1_to_p2: u128,
+    pub hits_p2_to_p1: u128,
     pub hits_on_p1: u32,
     pub hits_on_p2: u32,
     // Bit mask for sunk ships for each player board.

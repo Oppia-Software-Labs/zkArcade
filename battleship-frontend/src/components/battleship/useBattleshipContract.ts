@@ -136,6 +136,7 @@ export function useBattleshipContract(initResultRef: InitResultRef) {
   const myPendingShotRef = useRef(myPendingShot);
   const gameStateRef = useRef(gameState);
   const autoResolveInProgressRef = useRef(false);
+  const loadingRef = useRef(loading);
 
   useEffect(() => { perPlayerUiRef.current = perPlayerUi; }, [perPlayerUi]);
   useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
@@ -148,6 +149,7 @@ export function useBattleshipContract(initResultRef: InitResultRef) {
   useEffect(() => { myShotsOnOpponentRef.current = myShotsOnOpponent; }, [myShotsOnOpponent]);
   useEffect(() => { myPendingShotRef.current = myPendingShot; }, [myPendingShot]);
   useEffect(() => { gameStateRef.current = gameState; }, [gameState]);
+  useEffect(() => { loadingRef.current = loading; }, [loading]);
 
   useEffect(() => {
     try {
@@ -202,20 +204,30 @@ export function useBattleshipContract(initResultRef: InitResultRef) {
     }
   }, [sessionId, gamePhase]);
 
+  const endGameNotifiedRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (gamePhase !== 'ended' || !gameState || !userAddress) return;
+    if (endGameNotifiedRef.current === sessionId) return;
+    endGameNotifiedRef.current = sessionId;
+    battleshipService
+      .notifyGameEndedToHub(sessionId, userAddress, getContractSigner())
+      .catch(() => {});
+  }, [gamePhase, gameState, sessionId, userAddress]);
+
   useEffect(() => {
     if (!gameState || !userAddress) return;
     const noPending = unwrapOptionString(gameState.pending_shot_shooter) == null;
     if (!noPending) return;
-    const lr = gameState.last_resolved_shooter;
-    const isMe = lr != null && lr !== undefined && lr !== '' && lr === userAddress;
+    const lr = unwrapOptionString(gameState.last_resolved_shooter);
+    const isMe = lr != null && lr !== '' && lr === userAddress;
     if (!isMe) return;
     const px = gameState.last_resolved_x;
     const py = gameState.last_resolved_y;
     const key = `${px},${py}`;
-    setMyShotsOnOpponent((prev) => {
-      if (prev[key] !== undefined) return prev;
-      return { ...prev, [key]: { hit: gameState.last_resolved_is_hit, sunkShip: gameState.last_resolved_sunk_ship } };
-    });
+    setMyShotsOnOpponent((prev) => ({
+      ...prev,
+      [key]: { hit: gameState.last_resolved_is_hit, sunkShip: gameState.last_resolved_sunk_ship },
+    }));
     if (myPendingShot && myPendingShot.x === px && myPendingShot.y === py) setMyPendingShot(null);
   }, [gameState, userAddress, myPendingShot]);
 
@@ -244,14 +256,17 @@ export function useBattleshipContract(initResultRef: InitResultRef) {
   useEffect(() => {
     if (!gameState || (!isPlayer1 && !isPlayer2)) return;
     const myBitmap = isPlayer1 ? gameState.shots_p1_to_p2 : gameState.shots_p2_to_p1;
+    const myHitsBitmap = isPlayer1 ? gameState.hits_p1_to_p2 : gameState.hits_p2_to_p1;
     const allMyShots = decodeShotBitmap(myBitmap);
+    const myHits = decodeShotBitmap(myHitsBitmap);
     if (allMyShots.size === 0) return;
     setMyShotsOnOpponent((prev) => {
       let changed = false;
       const merged = { ...prev };
       for (const key of allMyShots) {
-        if (merged[key] === undefined) {
-          merged[key] = { hit: false, sunkShip: 0 };
+        const hit = myHits.has(key);
+        if (merged[key] === undefined || merged[key].hit !== hit) {
+          merged[key] = { hit, sunkShip: prev[key]?.sunkShip ?? 0 };
           changed = true;
         }
       }
@@ -486,26 +501,20 @@ export function useBattleshipContract(initResultRef: InitResultRef) {
     if (!placement || !salt) return;
     if (autoResolveInProgressRef.current) return;
     autoResolveInProgressRef.current = true;
-    setLoading(true);
     setError(null);
-    setSuccess({ message: 'Generating ZK proof & resolving shot...' });
     try {
       const currentSession = sessionIdRef.current;
       const currentUser = userAddressRef.current;
       const currentSigner = getContractSignerRef.current;
       const game = await battleshipService.getGame(currentSession);
-      if (!game) {
-        setError('Game not found on-chain');
-        return;
-      }
+      if (!game) return;
       setGameState(game);
       const shotX = game.pending_shot_x;
       const shotY = game.pending_shot_y;
       const shooter = unwrapOptionString(game.pending_shot_shooter);
-      if (shooter == null || shooter === '') {
-        setError('Pending shot not found on-chain');
-        return;
-      }
+      if (shooter == null || shooter === '') return;
+      setLoading(true);
+      setSuccess({ message: 'Generating ZK proof & resolving shot...' });
       const defenderCommitmentRaw = currentUser === game.player1 ? game.board_commitment_p1 : game.board_commitment_p2;
       const boardCommitment = unwrapOptionBuffer(defenderCommitmentRaw);
       if (!boardCommitment || boardCommitment.length !== 32) {
@@ -604,6 +613,14 @@ export function useBattleshipContract(initResultRef: InitResultRef) {
     const currentSession = sessionIdRef.current;
     const currentUser = userAddressRef.current;
     const currentSigner = getContractSignerRef.current;
+    const game = gameStateRef.current;
+
+    if (!game || game.turn == null || game.turn !== currentUser) return;
+    const pendingShooter = unwrapOptionString(game.pending_shot_shooter);
+    if (pendingShooter != null && pendingShooter !== '') return;
+    if (myPendingShotRef.current) return;
+    if (loadingRef.current) return;
+
     setMyPendingShot({ x: col, y: row });
     setError(null);
     setLoading(true);
@@ -615,10 +632,19 @@ export function useBattleshipContract(initResultRef: InitResultRef) {
         if (game) setGamePhase(phaseFromGame(game.phase));
         setTimeout(() => setSuccess(null), 8000);
       })
-      .catch((err) => {
+      .catch(async (err) => {
         console.error('fire tx error:', err);
-        setMyPendingShot(null);
         setError(err instanceof Error ? err.message : 'Failed to fire');
+        try {
+          const game = await battleshipService.getGame(currentSession);
+          setGameState(game);
+          if (game) {
+            setGamePhase(phaseFromGame(game.phase));
+            const shooter = unwrapOptionString(game.pending_shot_shooter);
+            if (shooter) return;
+          }
+        } catch { /* ignore poll failure */ }
+        setMyPendingShot(null);
       })
       .finally(() => setLoading(false));
   }, []);

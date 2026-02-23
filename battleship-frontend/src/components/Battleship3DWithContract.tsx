@@ -121,6 +121,7 @@ export function Battleship3DWithContract() {
       phase: 'battle',
       isMyTurn: isMyTurn && !effectivePendingShot,
       hasPendingShot: effectivePendingShot,
+      loading,
       iAmDefender,
       pendingShotX: gameState?.pending_shot_x,
       pendingShotY: gameState?.pending_shot_y,
@@ -133,6 +134,7 @@ export function Battleship3DWithContract() {
     gamePhase,
     isMyTurn,
     hasPendingShot,
+    loading,
     iAmDefender,
     myPendingShot,
     gameState,
@@ -261,7 +263,9 @@ export function Battleship3DWithContract() {
           {gameState.winner === userAddress && (
             <a
               href={`https://twitter.com/intent/tweet?text=${encodeURIComponent(
-                `I won zkBattleship by Oppia, test it out at ${config.appDomain || window.location.origin}`
+                `I just won zkBattleship! Verify my victory on-chain (session ${sessionId})`
+              )}&url=${encodeURIComponent(
+                `${config.zkVerifierUrl}?session=${sessionId}`
               )}`}
               target="_blank"
               rel="noopener noreferrer"

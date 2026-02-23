@@ -24,6 +24,7 @@ export interface ContractModeState {
   phase: 'placement' | 'battle';
   isMyTurn?: boolean;
   hasPendingShot?: boolean;
+  loading?: boolean;
   iAmDefender?: boolean;
   pendingShotX?: number;
   pendingShotY?: number;
@@ -736,6 +737,7 @@ export function init(container: HTMLElement, options?: InitOptions): InitResult 
         tile.grid === 'ai' &&
         contractState.isMyTurn &&
         !contractState.hasPendingShot &&
+        !contractState.loading &&
         !(contractState.myShotsOnOpponent && contractState.myShotsOnOpponent[`${tile.col},${tile.row}`])
       ) {
         setTilePending(gameState.aiGrid[tile.row][tile.col].mesh);

@@ -572,6 +572,44 @@ select:focus {
 
 .hud-btn-secondary:hover { background: rgba(255, 255, 255, 0.14); }
 
+/* Legend */
+
+.hud-legend {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 0.5rem;
+}
+
+.hud-legend-title {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.35);
+  margin-bottom: 0.35rem;
+}
+
+.hud-legend-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  font-size: 0.65rem;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.hud-legend-items > span {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.hud-legend-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
 /* Game over overlay */
 
 .game-over-overlay {

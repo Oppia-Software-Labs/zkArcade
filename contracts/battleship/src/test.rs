@@ -191,6 +191,9 @@ fn test_start_commit_fire_resolve_flow() {
 
     let after = client.get_game(&session_id);
     assert_eq!(after.hits_on_p2, 1);
+    let expected_bit: u128 = 1 << (7 * 10 + 3);
+    assert_eq!(after.hits_p1_to_p2, expected_bit);
+    assert_eq!(after.hits_p2_to_p1, 0);
     assert_eq!(after.turn, Some(player2));
     assert!(after.pending_shot_shooter.is_none());
 }
@@ -360,6 +363,10 @@ fn test_duplicate_coordinate_rejected_for_same_shooter() {
         &valid_proof(&env),
     );
 
+    // Verify miss does not set hits bitmap
+    let after_miss = client.get_game(&session_id);
+    assert_eq!(after_miss.hits_p1_to_p2, 0);
+
     client.fire(&session_id, &player2, &0, &0);
     resolve_pending(
         &client,
@@ -373,6 +380,10 @@ fn test_duplicate_coordinate_rejected_for_same_shooter() {
         &board1,
         &valid_proof(&env),
     );
+
+    // Verify miss from player2 also does not set hits bitmap
+    let after_miss2 = client.get_game(&session_id);
+    assert_eq!(after_miss2.hits_p2_to_p1, 0);
 
     let result = client.try_fire(&session_id, &player1, &1, &1);
     assert_battleship_error(&result, Error::ShotAlreadyResolved);
@@ -433,6 +444,10 @@ fn test_win_at_17_hits_ends_in_game_hub() {
     assert_eq!(game.phase, GamePhase::Ended);
     assert_eq!(game.winner, Some(player1));
     assert_eq!(game.hits_on_p2, 17);
+    // All 17 hits should have corresponding bits set in the hits bitmap
+    assert_eq!(game.hits_p1_to_p2.count_ones(), 17);
+    // Player2 never hit anything
+    assert_eq!(game.hits_p2_to_p1, 0);
     assert!(hub.was_ended(&session_id));
 }
 

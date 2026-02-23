@@ -82,6 +82,17 @@ export function BattlePanel({
           {fireStatusLabel}
         </span>
       </div>
+
+      <div className="hud-legend">
+        <div className="hud-legend-title">Legend</div>
+        <div className="hud-legend-items">
+          <span><span className="hud-legend-swatch" style={{ background: '#2563eb' }} />Water</span>
+          <span><span className="hud-legend-swatch" style={{ background: '#16a34a' }} />Ship</span>
+          <span><span className="hud-legend-swatch" style={{ background: '#c41e3a' }} />Hit</span>
+          <span><span className="hud-legend-swatch" style={{ background: '#6b7280' }} />Miss</span>
+          <span><span className="hud-legend-swatch" style={{ background: '#f59e0b' }} />Pending</span>
+        </div>
+      </div>
     </div>
   );
 }

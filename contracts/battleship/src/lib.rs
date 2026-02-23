@@ -88,6 +88,8 @@ impl BattleshipContract {
             pending_shot_y: 0,
             shots_p1_to_p2: 0,
             shots_p2_to_p1: 0,
+            hits_p1_to_p2: 0,
+            hits_p2_to_p1: 0,
             hits_on_p1: 0,
             hits_on_p2: 0,
             sunk_ships_on_p1: 0,
@@ -292,6 +294,12 @@ impl BattleshipContract {
         }
 
         if is_hit {
+            if shooter == game.player1 {
+                game.hits_p1_to_p2 |= bit;
+            } else {
+                game.hits_p2_to_p1 |= bit;
+            }
+
             if defender == game.player1 {
                 game.hits_on_p1 += 1;
                 if game.hits_on_p1 > TOTAL_SHIP_CELLS {
