@@ -3,6 +3,7 @@
 import { $ } from 'bun';
 import { existsSync, readdirSync, statSync } from 'fs';
 import path from 'path';
+import { readEnvFile } from './utils/env';
 
 function usage() {
   console.log(`\nUsage: bun run dev:game <game-slug> [--install]\n`);
@@ -31,9 +32,13 @@ if (!existsSync(frontendDir)) {
   process.exit(1);
 }
 
-if (!existsSync(path.join(repoRoot, '.env'))) {
+const rootEnvPath = path.join(repoRoot, '.env');
+if (!existsSync(rootEnvPath)) {
   console.warn('\n⚠️  Root .env not found. Run bun run setup to deploy contracts and configure dev wallets.');
 }
+
+const rootEnv = await readEnvFile(rootEnvPath);
+const devEnv = { ...process.env, ...rootEnv };
 
 const nodeModulesPath = path.join(frontendDir, 'node_modules');
 if (shouldInstall || !existsSync(nodeModulesPath)) {
@@ -42,4 +47,4 @@ if (shouldInstall || !existsSync(nodeModulesPath)) {
 }
 
 console.log(`\n🚀 Starting ${gameSlug} frontend...`);
-await $`bun run dev`.cwd(frontendDir);
+await $`bun run dev`.cwd(frontendDir).env(devEnv);

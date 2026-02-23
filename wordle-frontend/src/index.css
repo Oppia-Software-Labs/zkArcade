@@ -1,0 +1,48 @@
+@import "tailwindcss/theme";
+@import "tailwindcss/utilities";
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --wordle-correct: #538d4e;
+  --wordle-present: #b59f3b;
+  --wordle-absent: #3a3a3c;
+  --wordle-empty: #121213;
+  --wordle-border: #565758;
+}
+
+@theme inline {
+  --color-wordle-correct: #538d4e;
+  --color-wordle-present: #b59f3b;
+  --color-wordle-absent: #3a3a3c;
+  --color-wordle-empty: #121213;
+  --color-wordle-border: #565758;
+}
+
+html {
+  font-family: "Inter", "Space Grotesk", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  background: #121213;
+  color: #fff;
+  min-height: 100vh;
+}
+
+#root {
+  min-height: 100vh;
+  padding: 1rem;
+}
+
+button {
+  cursor: pointer;
+  font-weight: 600;
+  border-radius: 0.5rem;
+  transition: opacity 0.2s;
+}
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}

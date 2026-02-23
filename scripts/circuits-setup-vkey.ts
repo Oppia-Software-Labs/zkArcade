@@ -6,11 +6,10 @@
  * Prerequisites:
  * - Circuits built: bun run circuits:build (produces circuits/build/resolve_shot.r1cs)
  * - snarkjs installed: bun install (or npm install) so npx snarkjs works
- * - A powers-of-tau (ptau) file. The ptau size must be at least as large as the
- *   number of constraints. Run: npx snarkjs r1cs info circuits/build/resolve_shot.r1cs
- *   to get # constraints, then use a ptau with power >= log2(constraints).
- *   Download e.g. from Hermez Phase 1 (see circuits/README.md) or generate with
- *   snarkjs powersoftau new bn128 <power> ptau.ptau
+ * - A powers-of-tau (ptau) file (Phase 1 is enough; the script runs pt2 to prepare Phase 2).
+ *   The ptau size must be at least as large as the number of constraints. Run:
+ *   npx snarkjs r1cs info circuits/build/resolve_shot.r1cs then use power >= log2(constraints).
+ *   Generate with: npx snarkjs ptn bn128 12 ptau.ptau (or download from Hermez Phase 1).
  *
  * Usage:
  *   bun run scripts/circuits-setup-vkey.ts --ptau <path-to.ptau>
@@ -31,6 +30,7 @@ import { join, resolve } from "path";
 const ROOT = import.meta.dir + "/..";
 const BUILD_DIR = join(ROOT, "circuits", "build");
 const R1CS = join(BUILD_DIR, "resolve_shot.r1cs");
+const PTAU_PHASE2 = join(BUILD_DIR, "ptau_phase2.ptau");
 const ZKEY_INITIAL = join(BUILD_DIR, "resolve_shot_0000.zkey");
 const ZKEY_FINAL = join(BUILD_DIR, "resolve_shot_final.zkey");
 const VKEY_JSON = join(BUILD_DIR, "vkey.json");
@@ -91,20 +91,7 @@ async function main() {
 
   // 1) groth16 setup: circuit.r1cs + ptau -> circuit_0000.zkey
   console.log("Running snarkjs groth16 setup...");
-  await $`npx snarkjs g16s ${R1CS} ${ptauPath} ${ZKEY_INITIAL}`;
-  if (!existsSync(ZKEY_INITIAL)) {
-    console.error("Error: snarkjs did not create the zkey file. Check the output above for errors.");
-    process.exit(1);
-  }
-  const zkeySize = statSync(ZKEY_INITIAL).size;
-  if (zkeySize === 0) {
-    console.error("Error: zkey file is empty. If snarkjs said 'Powers of tau is not prepared':");
-    console.error("  Your ptau must be phase-2 prepared. Use a Hermez *_final_*.ptau, or run:");
-    console.error("  npx snarkjs pt2 <your.ptau> ptau_final.ptau -v");
-    console.error("  See circuits/README.md (Powers-of-tau) for the full workflow.");
-    console.error("Other causes: ptau too small for circuit, wrong curve, or corrupt file.");
-    process.exit(1);
-  }
+  await $`npx snarkjs g16s ${R1CS} ${ptau} ${ZKEY_INITIAL}`.quiet();
   console.log("Wrote", ZKEY_INITIAL);
 
   let zkeyForVkey = ZKEY_INITIAL;

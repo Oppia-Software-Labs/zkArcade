@@ -66,6 +66,10 @@ const RPC_URL = 'https://soroban-testnet.stellar.org';
 const NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015';
 // Required Game Hub for submissions: contracts must call start_game() and end_game() on this hub.
 const EXISTING_GAME_HUB_TESTNET_CONTRACT_ID = 'CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG';
+/** Deploy order: verifier stack (circom → adapter) then battleship; then Wordle stack (adapter then game). */
+const DEPLOY_ORDER = ["circom-groth16-verifier", "battleship-verifier-adapter", "battleship", "wordle-verifier-adapter", "wordle"];
+const VKEY_SOROBAN_PATH = "circuits/build/vkey_soroban.json";
+const WORDLE_VKEY_SOROBAN_PATH = "circuits/build/vkey_wordle_soroban.json";
 
 async function testnetAccountExists(address: string): Promise<boolean> {
   const res = await fetch(`https://horizon-testnet.stellar.org/accounts/${address}`, { method: 'GET' });
@@ -128,14 +132,29 @@ if (selection.unknown.length > 0 || selection.ambiguous.length > 0) {
   process.exit(1);
 }
 
-const contracts = selection.contracts;
+// When deploying "wordle", also deploy wordle-verifier-adapter so it uses the new circom-groth16-verifier-wordle.
+let contracts = selection.contracts;
+const wordleAdapter = allContracts.find((c) => c.packageName === "wordle-verifier-adapter");
+if (
+  wordleAdapter &&
+  contracts.some((c) => c.packageName === "wordle") &&
+  !contracts.some((c) => c.packageName === "wordle-verifier-adapter")
+) {
+  contracts = [...contracts, wordleAdapter];
+}
 
 const BATTLESHIP_CHAIN_PACKAGES = ["battleship", "circom-groth16-verifier", "battleship-verifier-adapter"] as const;
+const WORDLE_CHAIN_PACKAGES = ["wordle", "wordle-verifier-adapter"] as const;
 const needsBattleshipChain = contracts.some((c) =>
   (BATTLESHIP_CHAIN_PACKAGES as readonly string[]).includes(c.packageName),
 );
+const needsWordleChain = contracts.some((c) =>
+  (WORDLE_CHAIN_PACKAGES as readonly string[]).includes(c.packageName),
+);
 const standardGameContracts = contracts.filter(
-  (c) => !(BATTLESHIP_CHAIN_PACKAGES as readonly string[]).includes(c.packageName),
+  (c) =>
+    !(BATTLESHIP_CHAIN_PACKAGES as readonly string[]).includes(c.packageName) &&
+    !(WORDLE_CHAIN_PACKAGES as readonly string[]).includes(c.packageName),
 );
 
 const mock = allContracts.find((c) => c.isMockHub);
@@ -318,6 +337,14 @@ if (mock && shouldEnsureMock) {
   }
 }
 
+// Deploy non-mock contracts in dependency order with correct constructor args
+const orderedContracts = [...contracts]
+  .filter((c) => !c.isMockHub)
+  .sort((a, b) => {
+    const ia = DEPLOY_ORDER.indexOf(a.packageName);
+    const ib = DEPLOY_ORDER.indexOf(b.packageName);
+    return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
+  });
 // Deploy Battleship verifier chain (circom-groth16-verifier → adapter → battleship) when any of them are selected.
 if (needsBattleshipChain) {
   const vkeyPath = join(import.meta.dir, "..", "circuits", "build", "vkey_soroban.json");
@@ -357,9 +384,33 @@ if (needsBattleshipChain) {
   console.log(`✅ battleship: ${deployed["battleship"]}\n`);
 }
 
-for (const contract of standardGameContracts) {
-  if (contract.isMockHub) continue;
+// Deploy Wordle Groth16 verifier (separate instance with resolve_guess vkey) when Wordle or adapter is selected.
+if (needsWordleChain) {
+  const wordleVkeyPath = join(import.meta.dir, "..", "circuits", "build", "vkey_wordle_soroban.json");
+  if (!existsSync(wordleVkeyPath)) {
+    console.error("❌ Wordle chain requires resolve_guess verification key. Run:");
+    console.error("   bun run circuits:build");
+    console.error("   bun run circuits:setup-vkey-wordle -- --ptau <path>");
+    console.error("   bun run circuits:vkey-to-soroban circuits/build/vkey_wordle.json --out circuits/build/vkey_wordle_soroban.json");
+    process.exit(1);
+  }
+  const wordleVkeyJson = await Bun.file(wordleVkeyPath).json();
+  const wordleVkeyArg = JSON.stringify(wordleVkeyJson);
 
+  const wasmPath = (name: string) =>
+    join(import.meta.dir, "..", "target", "wasm32v1-none", "release", `${name}.wasm`);
+
+  console.log("Deploying Wordle verifier (resolve_guess vkey)...\n");
+
+  const groth16Wasm = wasmPath("circom_groth16_verifier");
+  const installGroth16Wordle = await $`stellar contract install --wasm ${groth16Wasm} --source-account ${adminSecret} --network ${NETWORK}`.text();
+  const deployGroth16Wordle = await $`stellar contract deploy --wasm-hash ${installGroth16Wordle.trim()} --source-account ${adminSecret} --network ${NETWORK} -- --vk ${wordleVkeyArg}`.text();
+  deployed["circom-groth16-verifier-wordle"] = deployGroth16Wordle.trim();
+  console.log(`✅ circom-groth16-verifier (Wordle): ${deployed["circom-groth16-verifier-wordle"]}\n`);
+}
+
+for (const contract of orderedContracts) {
+  if (needsBattleshipChain && (BATTLESHIP_CHAIN_PACKAGES as readonly string[]).includes(contract.packageName)) continue;
   console.log(`Deploying ${contract.packageName}...`);
   try {
     console.log("  Uploading WASM...");
@@ -368,9 +419,49 @@ for (const contract of standardGameContracts) {
     const wasmHash = uploadResult.trim();
     console.log(`  WASM hash: ${wasmHash}`);
 
+    let constructorArgs: string[];
+    if (contract.packageName === "circom-groth16-verifier") {
+      if (!existsSync(VKEY_SOROBAN_PATH)) {
+        console.error(`❌ Error: ${VKEY_SOROBAN_PATH} not found. Run circuits setup first:`);
+        console.error("   bun run circuits:build && bun run circuits:setup-vkey -- --ptau circuits/build/ptau.ptau && bun run circuits:vkey-to-soroban");
+        process.exit(1);
+      }
+      constructorArgs = ["--vk-file-path", VKEY_SOROBAN_PATH];
+    } else if (contract.packageName === "battleship-verifier-adapter") {
+      const verifierId = deployed["circom-groth16-verifier"];
+      if (!verifierId) {
+        console.error("❌ Error: circom-groth16-verifier must be deployed before battleship-verifier-adapter.");
+        process.exit(1);
+      }
+      constructorArgs = ["--admin", adminAddress, "--verifier", verifierId];
+    } else if (contract.packageName === "battleship") {
+      const verifierId = deployed["battleship-verifier-adapter"];
+      if (!verifierId) {
+        console.error("❌ Error: battleship-verifier-adapter must be deployed before battleship.");
+        process.exit(1);
+      }
+      constructorArgs = ["--admin", adminAddress, "--game-hub", mockGameHubId, "--verifier", verifierId];
+    } else if (contract.packageName === "wordle-verifier-adapter") {
+      const verifierId = deployed["circom-groth16-verifier-wordle"];
+      if (!verifierId) {
+        console.error("❌ Error: Wordle Groth16 verifier must be deployed first (run deploy with wordle or wordle-verifier-adapter).");
+        process.exit(1);
+      }
+      constructorArgs = ["--admin", adminAddress, "--verifier", verifierId];
+    } else if (contract.packageName === "wordle") {
+      const verifierId = deployed["wordle-verifier-adapter"];
+      if (!verifierId) {
+        console.error("❌ Error: wordle-verifier-adapter must be deployed before wordle.");
+        process.exit(1);
+      }
+      constructorArgs = ["--admin", adminAddress, "--game-hub", mockGameHubId, "--verifier", verifierId];
+    } else {
+      constructorArgs = ["--admin", adminAddress, "--game-hub", mockGameHubId];
+    }
+
     console.log("  Deploying and initializing...");
     const deployResult =
-      await $`stellar contract deploy --wasm-hash ${wasmHash} --source-account ${adminSecret} --network ${NETWORK} -- --admin ${adminAddress} --game-hub ${mockGameHubId}`.text();
+      await $`stellar contract deploy --wasm-hash ${wasmHash} --source-account ${adminSecret} --network ${NETWORK} -- ${constructorArgs}`.text();
     const contractId = deployResult.trim();
     deployed[contract.packageName] = contractId;
     console.log(`✅ ${contract.packageName} deployed: ${contractId}\n`);
@@ -390,10 +481,18 @@ if (needsBattleshipChain) {
   outputContracts.add("battleship-verifier-adapter");
   outputContracts.add("battleship");
 }
+if (needsWordleChain) {
+  outputContracts.add("circom-groth16-verifier-wordle");
+  outputContracts.add("wordle-verifier-adapter");
+  outputContracts.add("wordle");
+}
 for (const contract of allContracts) {
   if (!outputContracts.has(contract.packageName)) continue;
   const id = deployed[contract.packageName];
   if (id) console.log(`  ${contract.packageName}: ${id}`);
+}
+if (deployed["circom-groth16-verifier-wordle"]) {
+  console.log(`  circom-groth16-verifier-wordle: ${deployed["circom-groth16-verifier-wordle"]}`);
 }
 
 const twentyOneId = deployed["twenty-one"] || "";
@@ -406,6 +505,9 @@ const deploymentContracts = allContracts.reduce<Record<string, string>>((acc, co
 if (deployed["circom-groth16-verifier"]) deploymentContracts["circom-groth16-verifier"] = deployed["circom-groth16-verifier"];
 if (deployed["battleship-verifier-adapter"]) deploymentContracts["battleship-verifier-adapter"] = deployed["battleship-verifier-adapter"];
 if (deployed["battleship"]) deploymentContracts["battleship"] = deployed["battleship"];
+if (deployed["circom-groth16-verifier-wordle"]) deploymentContracts["circom-groth16-verifier-wordle"] = deployed["circom-groth16-verifier-wordle"];
+if (deployed["wordle-verifier-adapter"]) deploymentContracts["wordle-verifier-adapter"] = deployed["wordle-verifier-adapter"];
+if (deployed["wordle"]) deploymentContracts["wordle"] = deployed["wordle"];
 
 const deploymentInfo = {
   mockGameHubId,
@@ -413,6 +515,8 @@ const deploymentInfo = {
   numberGuessId,
   circomGroth16VerifierId: deployed["circom-groth16-verifier"] || "",
   battleshipVerifierAdapterId: deployed["battleship-verifier-adapter"] || "",
+  circomGroth16VerifierWordleId: deployed["circom-groth16-verifier-wordle"] || "",
+  wordleVerifierAdapterId: deployed["wordle-verifier-adapter"] || "",
   contracts: deploymentContracts,
   network: NETWORK,
   rpcUrl: RPC_URL,

@@ -1,7 +1,10 @@
 #!/usr/bin/env bun
 
 /**
- * Build script for Circom circuits (board_commit, resolve_shot).
+ * Build script for Circom circuits.
+ *
+ * Battleship circuits: board_commit, resolve_shot
+ * Wordle circuits: word_commit, resolve_guess
  *
  * Compiles circuits with circom using circomlib from node_modules.
  * Outputs R1CS, WASM, and symbol file to circuits/build.
@@ -20,7 +23,14 @@ const CIRCUITS_DIR = join(ROOT, "circuits");
 const BUILD_DIR = join(CIRCUITS_DIR, "build");
 const NODE_MODULES = join(ROOT, "node_modules");
 
-const CIRCUITS = ["board_commit", "resolve_shot"] as const;
+const CIRCUITS = [
+  // Battleship circuits
+  "board_commit",
+  "resolve_shot",
+  // Wordle circuits
+  "word_commit",
+  "resolve_guess",
+] as const;
 
 async function main() {
   console.log("🔌 Building Circom circuits...\n");
@@ -63,9 +73,6 @@ async function main() {
 
   console.log("✅ All circuits built in circuits/build");
 
-  // Copy to battleship-frontend public so production build and dev (fallback) can serve WASM
-  const publicCircuits = join(ROOT, "battleship-frontend", "public", "circuits", "build");
-  await mkdir(publicCircuits, { recursive: true });
   async function copyDir(src: string, dest: string) {
     await mkdir(dest, { recursive: true });
     for (const e of await readdir(src, { withFileTypes: true })) {
@@ -75,8 +82,14 @@ async function main() {
       else await copyFile(s, d);
     }
   }
-  await copyDir(BUILD_DIR, publicCircuits);
+  const publicCircuitsBattleship = join(ROOT, "battleship-frontend", "public", "circuits", "build");
+  await mkdir(publicCircuitsBattleship, { recursive: true });
+  await copyDir(BUILD_DIR, publicCircuitsBattleship);
   console.log("✅ Copied circuits/build to battleship-frontend/public/circuits/build");
+  const publicCircuitsWordle = join(ROOT, "wordle-frontend", "public", "circuits", "build");
+  await mkdir(publicCircuitsWordle, { recursive: true });
+  await copyDir(BUILD_DIR, publicCircuitsWordle);
+  console.log("✅ Copied circuits/build to wordle-frontend/public/circuits/build");
 }
 
 main();

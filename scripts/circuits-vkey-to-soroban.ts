@@ -48,8 +48,14 @@ function toHex32(n: string | number): string {
   return buf.toString("hex");
 }
 
+const G1_ZERO = "0".repeat(128); // 64 bytes = 128 hex chars (point at infinity for Soroban BN254)
+
 function g1Bytes(pt: [string, string]): string {
-  return toHex32(pt[0]) + toHex32(pt[1]);
+  const x = typeof pt[0] === "string" ? BigInt(pt[0]) : BigInt(Number(pt[0]));
+  const y = typeof pt[1] === "string" ? BigInt(pt[1]) : BigInt(Number(pt[1]));
+  // Snarkjs exports the point at infinity as (0,1) or (0,0). Soroban BN254 expects 64 zero bytes.
+  if (x === 0n && (y === 0n || y === 1n)) return G1_ZERO;
+  return toHex32(String(pt[0])) + toHex32(String(pt[1]));
 }
 
 function g2Bytes(pt: [[string, string], [string, string]]): string {
