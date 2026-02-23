@@ -4,11 +4,9 @@ import Image from "next/image";
 import Link from "next/link";
 import useEmblaCarousel from "embla-carousel-react";
 import { useCallback } from "react";
-import { GAME_URLS } from "@/config";
-
 const GAMES = [
-  { id: "wordle", name: "Wordle", image: "/games/wordle.svg", href: GAME_URLS.wordle },
-  { id: "battleship", name: "Battleship", image: "/games/battleship.svg", href: GAME_URLS.battleship },
+  { id: "wordle", name: "Wordle", image: "/games/wordle.svg", href: "/wordle" },
+  { id: "battleship", name: "Battleship", image: "/games/battleship.svg", href: "/battleship" },
 ] as const;
 
 // 10% bigger than 280×168 → 308×185
@@ -23,8 +21,6 @@ function GameCard({ game }: { game: (typeof GAMES)[number] }) {
   return (
     <Link
       href={game.href}
-      target="_blank"
-      rel="noopener noreferrer"
       className="cursor-target flex-shrink-0 flex items-center justify-center rounded-xl overflow-hidden border border-white/15 bg-white/[0.06] hover:bg-white/[0.12] hover:border-white/25 transition-all duration-300 hover:scale-[1.03] focus:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
       style={{ width: CARD_WIDTH_PX, height: CARD_HEIGHT_PX }}
     >
