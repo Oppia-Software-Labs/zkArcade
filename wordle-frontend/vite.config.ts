@@ -34,8 +34,8 @@ export default defineConfig({
     alias: {
       '@': path.resolve(__dirname, './src'),
       buffer: path.resolve(__dirname, './node_modules/buffer/'),
-      // Generated wordle bindings (after: bun run bindings wordle)
-      'wordle-contract': path.resolve(__dirname, '../bindings/wordle/src/index.ts'),
+      // Generated wordle bindings (copied into frontend for Vercel)
+      'wordle-contract': path.resolve(__dirname, './src/generated/wordleClient.ts'),
     },
     dedupe: ['@stellar/stellar-sdk']
   },
